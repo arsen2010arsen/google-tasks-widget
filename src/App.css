@@ -47,9 +47,9 @@ html, body, #root {
   position: relative;
 }
 
-/* Top Header */
+/* Top Header - ONLY this area is draggable */
 .widget-header {
-  height: 42px;
+  height: 40px;
   padding: 0 12px;
   display: flex;
   align-items: center;
@@ -92,14 +92,6 @@ html, body, #root {
   background: #ffbd2e;
   border: 1px solid #dea123;
 }
-.traffic-btn.pin {
-  background: #27c93f;
-  border: 1px solid #1aab29;
-}
-.traffic-btn.pin.active {
-  background: #007aff;
-  border: 1px solid #0056b3;
-}
 
 /* Header Center */
 .header-center {
@@ -131,7 +123,7 @@ html, body, #root {
   justify-content: center;
 }
 
-/* Header Actions - Round Buttons */
+/* Header Actions */
 .header-actions {
   display: flex;
   align-items: center;
@@ -195,7 +187,7 @@ html, body, #root {
   to { transform: rotate(360deg); }
 }
 
-/* Tasks List - Direct under header */
+/* Tasks List */
 .tasks-container {
   flex: 1;
   padding: 8px 12px;
@@ -221,6 +213,7 @@ html, body, #root {
   border-bottom: 1px solid rgba(255, 255, 255, 0.05);
   transition: background 0.15s;
   border-radius: 8px;
+  cursor: pointer;
 }
 .task-row:last-child {
   border-bottom: none;
@@ -236,17 +229,19 @@ html, body, #root {
   color: rgba(255, 255, 255, 0.4);
 }
 
-/* Apple Checkbox */
+/* Apple Checkbox Button */
 .apple-checkbox {
-  width: 16px;
-  height: 16px;
+  width: 17px;
+  height: 17px;
   border-radius: 50%;
   border: 1.6px solid #4285f4;
+  background: transparent;
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
   flex-shrink: 0;
+  padding: 0;
   transition: all 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275);
 }
 .apple-checkbox:hover {
@@ -352,18 +347,18 @@ html, body, #root {
   padding: 7px 10px 8px 10px;
   border-top: 1px solid rgba(255, 255, 255, 0.07);
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  gap: 4px;
   position: relative;
 }
 .quick-add-form {
-  flex: 1;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   background: rgba(0, 0, 0, 0.25);
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 16px;
-  padding: 4px 6px 4px 10px;
+  padding: 4px 6px 4px 8px;
   transition: border-color 0.2s;
 }
 .quick-add-form:focus-within {
@@ -378,10 +373,53 @@ html, body, #root {
   color: #ffffff;
   font-size: 11.5px;
   font-family: inherit;
+  min-width: 0;
 }
 .quick-add-input::placeholder {
   color: rgba(255, 255, 255, 0.35);
 }
+
+/* Date picker button in input */
+.date-picker-btn {
+  background: transparent;
+  border: none;
+  color: rgba(255, 255, 255, 0.45);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  border-radius: 50%;
+  transition: all 0.15s;
+  flex-shrink: 0;
+}
+.date-picker-btn:hover, .date-picker-btn.active {
+  color: #ff9f0a;
+  transform: scale(1.1);
+}
+
+.selected-due-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background: rgba(255, 159, 10, 0.2);
+  color: #ff9f0a;
+  font-size: 10px;
+  font-weight: 500;
+  padding: 1px 5px;
+  border-radius: 8px;
+  white-space: nowrap;
+}
+.clear-due-btn {
+  background: transparent;
+  border: none;
+  color: #ff9f0a;
+  cursor: pointer;
+  padding: 0;
+  display: flex;
+  align-items: center;
+}
+
 .quick-add-submit {
   width: 20px;
   height: 20px;
@@ -400,6 +438,54 @@ html, body, #root {
 .quick-add-submit:hover {
   background: #1557b0;
   transform: scale(1.1);
+}
+
+/* Date Popover */
+.date-popover {
+  position: absolute;
+  bottom: 42px;
+  left: 10px;
+  right: 10px;
+  background: rgba(28, 30, 40, 0.96);
+  backdrop-filter: blur(25px);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 12px;
+  padding: 8px 10px;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.6);
+  z-index: 25;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.date-popover-row {
+  display: flex;
+  gap: 5px;
+}
+.date-quick-btn {
+  flex: 1;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #fff;
+  font-size: 10.5px;
+  padding: 4px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.date-quick-btn:hover {
+  background: rgba(66, 133, 244, 0.3);
+  border-color: rgba(66, 133, 244, 0.5);
+}
+.date-custom-input {
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #fff;
+  border-radius: 6px;
+  padding: 3px 6px;
+  font-size: 11px;
+  outline: none;
+  width: 100%;
+  color-scheme: dark;
 }
 
 /* Resize corner grip */

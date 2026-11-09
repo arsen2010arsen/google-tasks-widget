@@ -11,20 +11,20 @@ import {
   Calendar,
   Check,
   Inbox,
+  X,
 } from "lucide-react";
 import "./App.css";
 
 export function App() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [newTaskTitle, setNewTaskTitle] = useState("");
+  const [selectedDue, setSelectedDue] = useState<string | null>(null);
+  const [isDatePickerOpen, setIsDatePickerOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [activeSize, setActiveSize] = useState<"S" | "M" | "L">("S");
-  const [isAlwaysOnTop, setIsAlwaysOnTop] = useState(
-    tasksService.getConfig().alwaysOnTop
-  );
 
-  // Load all tasks (unified single list)
+  // Load all tasks
   const loadTasks = useCallback(async () => {
     setIsLoading(true);
     try {
@@ -39,9 +39,14 @@ export function App() {
 
   useEffect(() => {
     loadTasks();
+    // Auto-refresh interval (every 5 min or config)
+    const interval = setInterval(() => {
+      loadTasks();
+    }, 5 * 60 * 1000);
+    return () => clearInterval(interval);
   }, [loadTasks]);
 
-  // Window drag handler
+  // Window drag handler - ONLY fires from the header
   const handleStartDrag = async (e: React.MouseEvent) => {
     if (e.button === 0 && !(e.target as HTMLElement).closest("button, input, form")) {
       try {
@@ -52,7 +57,7 @@ export function App() {
     }
   };
 
-  // Window actions via Tauri Rust backend
+  // Window actions
   const handleClose = async () => {
     try {
       await invoke("close_window");
@@ -69,18 +74,7 @@ export function App() {
     }
   };
 
-  const handleToggleAlwaysOnTop = async (value?: boolean) => {
-    const nextVal = value !== undefined ? value : !isAlwaysOnTop;
-    setIsAlwaysOnTop(nextVal);
-    tasksService.saveConfig({ alwaysOnTop: nextVal });
-    try {
-      await invoke("set_always_on_top", { alwaysOnTop: nextVal });
-    } catch (e) {
-      console.warn("set_always_on_top error", e);
-    }
-  };
-
-  // Preset sizes for laptops / compact screens
+  // Preset sizes
   const handleSetSize = async (size: "S" | "M" | "L") => {
     setActiveSize(size);
     let width = 290;
@@ -100,28 +94,40 @@ export function App() {
     }
   };
 
-  // Toggle task completion
+  // Toggle task completion (Checked / Unchecked)
   const handleToggleTask = async (task: Task) => {
     const isCompleted = task.status === "completed";
     const nextStatus = isCompleted ? "needsAction" : "completed";
 
-    // Optimistic UI update
+    // Immediate optimistic UI update
     setTasks((prev) =>
       prev.map((t) => (t.id === task.id ? { ...t, status: nextStatus } : t))
     );
 
-    await tasksService.setTaskStatus(task.id, !isCompleted);
+    try {
+      await tasksService.setTaskStatus(task.id, !isCompleted);
+    } catch (err) {
+      console.error("Failed to update task status", err);
+    }
   };
 
-  // Add new task
+  // Add new task with optional due date
   const handleCreateTask = async (e: React.FormEvent) => {
     e.preventDefault();
     const title = newTaskTitle.trim();
     if (!title) return;
 
     setNewTaskTitle("");
-    const created = await tasksService.createTask(title);
-    setTasks((prev) => [created, ...prev]);
+    const dueToSave = selectedDue;
+    setSelectedDue(null);
+    setIsDatePickerOpen(false);
+
+    try {
+      const created = await tasksService.createTask(title, dueToSave || undefined);
+      setTasks((prev) => [created, ...prev]);
+    } catch (err) {
+      console.error("Failed to create task", err);
+    }
   };
 
   // Delete task
@@ -131,32 +137,40 @@ export function App() {
     await tasksService.deleteTask(taskId);
   };
 
+  // Quick date pickers
+  const setQuickDate = (daysFromNow: number) => {
+    const date = new Date();
+    date.setDate(date.getDate() + daysFromNow);
+    date.setHours(23, 59, 59, 0);
+    setSelectedDue(date.toISOString());
+    setIsDatePickerOpen(false);
+  };
+
+  const handleCustomDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.value) {
+      const date = new Date(e.target.value + "T23:59:59.000Z");
+      setSelectedDue(date.toISOString());
+      setIsDatePickerOpen(false);
+    }
+  };
+
   const activeTasksCount = tasks.filter((t) => t.status === "needsAction").length;
 
   return (
-    <div className="widget-frame" onMouseDown={handleStartDrag}>
+    <div className="widget-frame">
       <div className="glass-container">
-        {/* Header - Circular controls only */}
+        {/* Header - ONLY header is draggable */}
         <div className="widget-header" onMouseDown={handleStartDrag}>
           <div className="traffic-lights">
             <button
               className="traffic-btn close"
               onClick={handleClose}
-              title="Закрити"
+              title="Закрити віджет"
             />
             <button
               className="traffic-btn minimize"
               onClick={handleMinimize}
-              title="Згорнути"
-            />
-            <button
-              className={`traffic-btn pin ${isAlwaysOnTop ? "active" : ""}`}
-              onClick={() => handleToggleAlwaysOnTop()}
-              title={
-                isAlwaysOnTop
-                  ? "Режим: Поверх усіх вікон (Клікніть, щоб закріпити на робочому столі)"
-                  : "Режим: Закріплено на робочому столі (Клікніть, щоб закріпити поверх усіх)"
-              }
+              title="Сховати в трей"
             />
           </div>
 
@@ -200,14 +214,14 @@ export function App() {
             <button
               className="action-icon-btn"
               onClick={() => setIsSettingsOpen(true)}
-              title="Налаштування"
+              title="Налаштування Google Cloud"
             >
               <Settings size={11} />
             </button>
           </div>
         </div>
 
-        {/* Tasks List - Direct under header */}
+        {/* Tasks List */}
         <div className="tasks-container">
           {tasks.length === 0 ? (
             <div className="empty-state">
@@ -223,9 +237,18 @@ export function App() {
                   className={`task-row ${isDone ? "completed" : ""}`}
                   onClick={() => handleToggleTask(task)}
                 >
-                  <div className={`apple-checkbox ${isDone ? "checked" : ""}`}>
+                  <button
+                    type="button"
+                    className={`apple-checkbox ${isDone ? "checked" : ""}`}
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleToggleTask(task);
+                    }}
+                    title={isDone ? "Позначити як невиконане" : "Виконати"}
+                  >
                     {isDone && <Check />}
-                  </div>
+                  </button>
 
                   <div className="task-body">
                     <span className="task-title">{task.title}</span>
@@ -246,9 +269,11 @@ export function App() {
                   </div>
 
                   <button
+                    type="button"
                     className="task-del-btn"
+                    onMouseDown={(e) => e.stopPropagation()}
                     onClick={(e) => handleDeleteTask(task.id, e)}
-                    title="Видалити"
+                    title="Видалити завдання"
                   >
                     <Trash2 size={12} />
                   </button>
@@ -258,9 +283,71 @@ export function App() {
           )}
         </div>
 
-        {/* Footer Quick Add with Round Button */}
+        {/* Footer Quick Add with Date Picker */}
         <div className="widget-footer">
+          {isDatePickerOpen && (
+            <div className="date-popover">
+              <div style={{ fontSize: "10.5px", color: "rgba(255,255,255,0.6)", marginBottom: 2 }}>
+                Встановити термін завдання:
+              </div>
+              <div className="date-popover-row">
+                <button
+                  type="button"
+                  className="date-quick-btn"
+                  onClick={() => setQuickDate(0)}
+                >
+                  Сьогодні
+                </button>
+                <button
+                  type="button"
+                  className="date-quick-btn"
+                  onClick={() => setQuickDate(1)}
+                >
+                  Завтра
+                </button>
+                <button
+                  type="button"
+                  className="date-quick-btn"
+                  onClick={() => setQuickDate(7)}
+                >
+                  Через тиждень
+                </button>
+              </div>
+              <input
+                type="date"
+                className="date-custom-input"
+                onChange={handleCustomDateChange}
+              />
+            </div>
+          )}
+
           <form className="quick-add-form" onSubmit={handleCreateTask}>
+            <button
+              type="button"
+              className={`date-picker-btn ${selectedDue ? "active" : ""}`}
+              onClick={() => setIsDatePickerOpen(!isDatePickerOpen)}
+              title="Встановити термін (дедлайн)"
+            >
+              <Calendar size={13} />
+            </button>
+
+            {selectedDue && (
+              <span className="selected-due-badge">
+                {new Date(selectedDue).toLocaleDateString("uk-UA", {
+                  day: "numeric",
+                  month: "short",
+                })}
+                <button
+                  type="button"
+                  className="clear-due-btn"
+                  onClick={() => setSelectedDue(null)}
+                  title="Прибрати термін"
+                >
+                  <X size={10} />
+                </button>
+              </span>
+            )}
+
             <input
               type="text"
               className="quick-add-input"
@@ -268,11 +355,12 @@ export function App() {
               value={newTaskTitle}
               onChange={(e) => setNewTaskTitle(e.target.value)}
             />
+
             <button
               type="submit"
               className="quick-add-submit"
               disabled={!newTaskTitle.trim()}
-              title="Додати"
+              title="Додати завдання"
             >
               <Plus size={12} />
             </button>
@@ -294,7 +382,7 @@ export function App() {
           isOpen={isSettingsOpen}
           onClose={() => setIsSettingsOpen(false)}
           onConfigUpdated={loadTasks}
-          toggleAlwaysOnTop={handleToggleAlwaysOnTop}
+          toggleAlwaysOnTop={() => {}}
         />
       </div>
     </div>

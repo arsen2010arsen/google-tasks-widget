@@ -1,4 +1,8 @@
-use tauri::{Manager, WebviewWindow};
+use tauri::{
+    menu::{Menu, MenuItem},
+    tray::TrayIconBuilder,
+    Manager, WebviewWindow,
+};
 
 #[tauri::command]
 fn start_dragging(window: WebviewWindow) -> Result<(), String> {
@@ -32,6 +36,55 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
+            // Build System Tray
+            let show_item = MenuItem::with_id(app, "show", "Показати віджет", true, None::<&str>)?;
+            let hide_item = MenuItem::with_id(app, "hide", "Сховати віджет", true, None::<&str>)?;
+            let quit_item = MenuItem::with_id(app, "quit", "Вийти з віджета", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&show_item, &hide_item, &quit_item])?;
+
+            if let Some(icon) = app.default_window_icon() {
+                let _ = TrayIconBuilder::new()
+                    .icon(icon.clone())
+                    .menu(&menu)
+                    .tooltip("Google Tasks Widget")
+                    .on_menu_event(|app, event| match event.id.as_ref() {
+                        "show" => {
+                            if let Some(w) = app.get_webview_window("main") {
+                                let _ = w.show();
+                                let _ = w.set_focus();
+                            }
+                        }
+                        "hide" => {
+                            if let Some(w) = app.get_webview_window("main") {
+                                let _ = w.hide();
+                            }
+                        }
+                        "quit" => {
+                            app.exit(0);
+                        }
+                        _ => {}
+                    })
+                    .on_tray_icon_event(|tray, event| {
+                        if let tauri::tray::TrayIconEvent::Click {
+                            button: tauri::tray::MouseButton::Left,
+                            button_state: tauri::tray::MouseButtonState::Up,
+                            ..
+                        } = event
+                        {
+                            let app = tray.app_handle();
+                            if let Some(w) = app.get_webview_window("main") {
+                                if w.is_visible().unwrap_or(false) {
+                                    let _ = w.hide();
+                                } else {
+                                    let _ = w.show();
+                                    let _ = w.set_focus();
+                                }
+                            }
+                        }
+                    })
+                    .build(app);
+            }
+
             if let Some(window) = app.get_webview_window("main") {
                 #[cfg(target_os = "windows")]
                 {

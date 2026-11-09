@@ -47,6 +47,13 @@ const DEFAULT_MOCK_TASKS: Task[] = [
     listId: "@default",
     updated: new Date().toISOString(),
   },
+  {
+    id: "task-5",
+    title: "Купити каву в зернах",
+    status: "needsAction",
+    listId: "@default",
+    updated: new Date().toISOString(),
+  },
 ];
 
 export class GoogleTasksService {
@@ -100,14 +107,16 @@ export class GoogleTasksService {
 
       if (!res.ok) {
         if (res.status === 401 && this.config.refreshToken) {
-          await this.refreshAccessToken();
-          return this.getAllTasks();
+          const refreshed = await this.refreshAccessToken();
+          if (refreshed) {
+            return this.getAllTasks();
+          }
         }
         throw new Error(`Google API error: ${res.statusText}`);
       }
 
       const data = await res.json();
-      return (data.items || []).map((item: any) => ({
+      const items: Task[] = (data.items || []).map((item: any) => ({
         id: item.id,
         title: item.title || "(Без назви)",
         notes: item.notes,
@@ -116,6 +125,10 @@ export class GoogleTasksService {
         updated: item.updated,
         listId: "@default",
       }));
+
+      // Cache locally for offline use
+      localStorage.setItem(TASKS_STORAGE_KEY, JSON.stringify(items));
+      return items;
     } catch (err) {
       console.warn("Failed fetching tasks from Google, using cached tasks", err);
       const raw = localStorage.getItem(TASKS_STORAGE_KEY);
@@ -149,25 +162,45 @@ export class GoogleTasksService {
         listId
       )}/tasks/${encodeURIComponent(taskId)}`;
 
-      await fetch(url, {
+      const patchBody =
+        status === "completed"
+          ? { status: "completed" }
+          : { status: "needsAction", completed: null };
+
+      const res = await fetch(url, {
         method: "PATCH",
         headers: {
           Authorization: `Bearer ${this.config.accessToken}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ status }),
+        body: JSON.stringify(patchBody),
       });
+
+      if (!res.ok && res.status === 401 && this.config.refreshToken) {
+        await this.refreshAccessToken();
+        await this.setTaskStatus(taskId, completed, listId);
+      }
     } catch (err) {
       console.error("Failed to patch task status on Google", err);
     }
   }
 
   public async createTask(title: string, due?: string): Promise<Task> {
+    let formattedDue: string | undefined = undefined;
+    if (due) {
+      try {
+        const d = new Date(due);
+        formattedDue = d.toISOString().split("T")[0] + "T00:00:00.000Z";
+      } catch {
+        formattedDue = undefined;
+      }
+    }
+
     const newTask: Task = {
       id: `task-${Date.now()}`,
       title,
       status: "needsAction",
-      due,
+      due: formattedDue,
       listId: "@default",
       updated: new Date().toISOString(),
     };
@@ -192,13 +225,16 @@ export class GoogleTasksService {
         },
         body: JSON.stringify({
           title,
-          due,
+          due: formattedDue,
         }),
       });
 
       if (res.ok) {
         const data = await res.json();
         newTask.id = data.id;
+      } else if (res.status === 401 && this.config.refreshToken) {
+        await this.refreshAccessToken();
+        return this.createTask(title, due);
       }
     } catch (err) {
       console.error("Failed to create task on Google API", err);
@@ -222,12 +258,17 @@ export class GoogleTasksService {
         listId
       )}/tasks/${encodeURIComponent(taskId)}`;
 
-      await fetch(url, {
+      const res = await fetch(url, {
         method: "DELETE",
         headers: {
           Authorization: `Bearer ${this.config.accessToken}`,
         },
       });
+
+      if (!res.ok && res.status === 401 && this.config.refreshToken) {
+        await this.refreshAccessToken();
+        await this.deleteTask(taskId, listId);
+      }
     } catch (err) {
       console.error("Failed to delete task from Google API", err);
     }
