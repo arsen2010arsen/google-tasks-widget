@@ -12,8 +12,11 @@ import {
   Check,
   Inbox,
   X,
+  Edit2,
 } from "lucide-react";
 import "./App.css";
+
+const POS_KEY = "g_tasks_window_position";
 
 export function App() {
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -24,7 +27,11 @@ export function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [activeSize, setActiveSize] = useState<"S" | "M" | "L">("S");
 
-  // Load active tasks only
+  // Inline editing state
+  const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
+  const [editingTitle, setEditingTitle] = useState("");
+
+  // Load active tasks
   const loadTasks = useCallback(async () => {
     setIsLoading(true);
     try {
@@ -37,6 +44,17 @@ export function App() {
     }
   }, []);
 
+  // Restore saved window position on startup
+  useEffect(() => {
+    const raw = localStorage.getItem(POS_KEY);
+    if (raw) {
+      try {
+        const { x, y } = JSON.parse(raw);
+        invoke("set_window_position", { x: Number(x), y: Number(y) }).catch(() => {});
+      } catch {}
+    }
+  }, []);
+
   useEffect(() => {
     loadTasks();
     const interval = setInterval(() => {
@@ -45,23 +63,30 @@ export function App() {
     return () => clearInterval(interval);
   }, [loadTasks]);
 
-  // Window drag handler - ONLY fires from the header
+  // Window drag handler
   const handleStartDrag = async (e: React.MouseEvent) => {
     if (e.button === 0 && !(e.target as HTMLElement).closest("button, input, form")) {
       try {
         await invoke("start_dragging");
+        // Save new position after dragging completes
+        setTimeout(async () => {
+          try {
+            const [x, y] = await invoke<[number, number]>("get_window_position");
+            localStorage.setItem(POS_KEY, JSON.stringify({ x, y }));
+          } catch {}
+        }, 500);
       } catch (err) {
         console.warn("start_dragging error", err);
       }
     }
   };
 
-  // Window actions
+  // Close hides to system tray
   const handleClose = async () => {
     try {
-      await invoke("close_window");
+      await invoke("hide_window");
     } catch (e) {
-      console.warn("close_window error", e);
+      console.warn("hide_window error", e);
     }
   };
 
@@ -95,10 +120,7 @@ export function App() {
 
   // Complete task - immediately removes it from the list
   const handleCompleteTask = async (task: Task) => {
-    // Immediately remove from UI list
     setTasks((prev) => prev.filter((t) => t.id !== task.id));
-
-    // Update in storage and Google Tasks API
     try {
       await tasksService.setTaskStatus(task.id, true);
     } catch (err) {
@@ -106,7 +128,7 @@ export function App() {
     }
   };
 
-  // Add new task with optional due date
+  // Add new task
   const handleCreateTask = async (e: React.FormEvent) => {
     e.preventDefault();
     const title = newTaskTitle.trim();
@@ -123,6 +145,24 @@ export function App() {
     } catch (err) {
       console.error("Failed to create task", err);
     }
+  };
+
+  // Inline editing save
+  const handleStartEdit = (task: Task, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setEditingTaskId(task.id);
+    setEditingTitle(task.title);
+  };
+
+  const handleSaveEdit = async (taskId: string) => {
+    const trimmed = editingTitle.trim();
+    if (trimmed) {
+      setTasks((prev) =>
+        prev.map((t) => (t.id === taskId ? { ...t, title: trimmed } : t))
+      );
+      await tasksService.updateTask(taskId, trimmed);
+    }
+    setEditingTaskId(null);
   };
 
   // Delete task
@@ -160,12 +200,12 @@ export function App() {
             <button
               className="traffic-btn close"
               onClick={handleClose}
-              title="Закрити віджет"
+              title="Сховати в трей (клікніть іконку біля годинника для повернення)"
             />
             <button
               className="traffic-btn minimize"
               onClick={handleMinimize}
-              title="Сховати в трей"
+              title="Згорнути"
             />
           </div>
 
@@ -209,7 +249,7 @@ export function App() {
             <button
               className="action-icon-btn"
               onClick={() => setIsSettingsOpen(true)}
-              title="Налаштування Google Cloud"
+              title="Налаштування"
             >
               <Settings size={11} />
             </button>
@@ -228,7 +268,9 @@ export function App() {
               <div
                 key={task.id}
                 className="task-row"
-                onClick={() => handleCompleteTask(task)}
+                onClick={() => {
+                  if (editingTaskId !== task.id) handleCompleteTask(task);
+                }}
               >
                 <button
                   type="button"
@@ -244,7 +286,30 @@ export function App() {
                 </button>
 
                 <div className="task-body">
-                  <span className="task-title">{task.title}</span>
+                  {editingTaskId === task.id ? (
+                    <input
+                      type="text"
+                      className="inline-edit-input"
+                      value={editingTitle}
+                      autoFocus
+                      onClick={(e) => e.stopPropagation()}
+                      onChange={(e) => setEditingTitle(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") handleSaveEdit(task.id);
+                        if (e.key === "Escape") setEditingTaskId(null);
+                      }}
+                      onBlur={() => handleSaveEdit(task.id)}
+                    />
+                  ) : (
+                    <span
+                      className="task-title"
+                      title="Клікніть двічі для редагування"
+                      onDoubleClick={(e) => handleStartEdit(task, e)}
+                    >
+                      {task.title}
+                    </span>
+                  )}
+
                   {task.notes && (
                     <span className="task-notes">{task.notes}</span>
                   )}
@@ -260,6 +325,16 @@ export function App() {
                     </div>
                   )}
                 </div>
+
+                <button
+                  type="button"
+                  className="task-del-btn"
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={(e) => handleStartEdit(task, e)}
+                  title="Редагувати текст"
+                >
+                  <Edit2 size={11} />
+                </button>
 
                 <button
                   type="button"

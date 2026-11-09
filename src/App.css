@@ -39,7 +39,7 @@ html, body, #root {
   flex: 1;
   display: flex;
   flex-direction: column;
-  background: rgba(22, 25, 35, 0.88);
+  background: rgba(20, 22, 30, 0.88);
   border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: 20px;
   overflow: hidden;
@@ -275,6 +275,17 @@ html, body, #root {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.inline-edit-input {
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid #4285f4;
+  border-radius: 4px;
+  color: #fff;
+  font-size: 12px;
+  padding: 1px 4px;
+  outline: none;
+  width: 100%;
+  font-family: inherit;
 }
 .task-badges {
   display: flex;
