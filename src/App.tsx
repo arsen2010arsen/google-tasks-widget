@@ -13,6 +13,7 @@ import {
   Inbox,
   X,
   Edit2,
+  Lock,
 } from "lucide-react";
 import "./App.css";
 
@@ -26,6 +27,9 @@ export function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [activeSize, setActiveSize] = useState<"S" | "M" | "L">("S");
+  const [isPositionLocked, setIsPositionLocked] = useState<boolean>(
+    tasksService.getConfig().isPositionLocked || false
+  );
 
   // Inline editing state
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
@@ -37,6 +41,7 @@ export function App() {
     try {
       const fetchedTasks = await tasksService.getAllTasks();
       setTasks(fetchedTasks);
+      setIsPositionLocked(tasksService.getConfig().isPositionLocked || false);
     } catch (err) {
       console.error("Failed loading tasks", err);
     } finally {
@@ -63,8 +68,9 @@ export function App() {
     return () => clearInterval(interval);
   }, [loadTasks]);
 
-  // Window drag handler
+  // Window drag handler - only drags if NOT locked
   const handleStartDrag = async (e: React.MouseEvent) => {
+    if (isPositionLocked) return;
     if (e.button === 0 && !(e.target as HTMLElement).closest("button, input, form")) {
       try {
         await invoke("start_dragging");
@@ -194,13 +200,17 @@ export function App() {
   return (
     <div className="widget-frame">
       <div className="glass-container">
-        {/* Header - ONLY header is draggable */}
-        <div className="widget-header" onMouseDown={handleStartDrag}>
+        {/* Header - draggable ONLY when not locked */}
+        <div
+          className={`widget-header ${isPositionLocked ? "locked" : ""}`}
+          onMouseDown={handleStartDrag}
+          style={{ cursor: isPositionLocked ? "default" : "grab" }}
+        >
           <div className="traffic-lights">
             <button
               className="traffic-btn close"
               onClick={handleClose}
-              title="Сховати в трей (клікніть іконку біля годинника для повернення)"
+              title="Сховати в трей"
             />
             <button
               className="traffic-btn minimize"
@@ -209,9 +219,18 @@ export function App() {
             />
           </div>
 
-          <div className="header-center" onMouseDown={handleStartDrag}>
+          <div
+            className="header-center"
+            onMouseDown={handleStartDrag}
+            style={{ cursor: isPositionLocked ? "default" : "grab" }}
+          >
             <span className="header-title">Google Tasks</span>
             <span className="badge-count">{activeTasksCount}</span>
+            {isPositionLocked && (
+              <span title="Положення заблоковано в налаштуваннях" style={{ display: "inline-flex", alignItems: "center" }}>
+                <Lock size={10} color="#8ab4f8" style={{ opacity: 0.7 }} />
+              </span>
+            )}
           </div>
 
           <div className="header-actions">
@@ -434,21 +453,26 @@ export function App() {
           </form>
 
           {/* Resize corner grip */}
-          <div
-            className="resize-grip"
-            title="Потягніть для зміни розміру або використовуйте кнопки S / M / L вгорі"
-          >
-            <svg viewBox="0 0 10 10">
-              <path d="M9 1L1 9M9 5L5 9M9 9L9 9" strokeWidth="1.5" strokeLinecap="round" />
-            </svg>
-          </div>
+          {!isPositionLocked && (
+            <div
+              className="resize-grip"
+              title="Потягніть для зміни розміру або використовуйте кнопки S / M / L вгорі"
+            >
+              <svg viewBox="0 0 10 10">
+                <path d="M9 1L1 9M9 5L5 9M9 9L9 9" strokeWidth="1.5" strokeLinecap="round" />
+              </svg>
+            </div>
+          )}
         </div>
 
         {/* Settings Modal */}
         <SettingsModal
           isOpen={isSettingsOpen}
           onClose={() => setIsSettingsOpen(false)}
-          onConfigUpdated={loadTasks}
+          onConfigUpdated={() => {
+            loadTasks();
+            setIsPositionLocked(tasksService.getConfig().isPositionLocked || false);
+          }}
           toggleAlwaysOnTop={() => {}}
         />
       </div>

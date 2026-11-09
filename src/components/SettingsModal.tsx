@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { AppConfig } from "../types";
 import { tasksService } from "../services/googleTasks";
-import { X, HelpCircle, LogIn, Power, Monitor } from "lucide-react";
+import { X, HelpCircle, LogIn, Power, Monitor, Lock } from "lucide-react";
 
 interface Props {
   isOpen: boolean;
@@ -24,6 +24,7 @@ export const SettingsModal: React.FC<Props> = ({
 
   useEffect(() => {
     if (isOpen) {
+      setConfig(tasksService.getConfig());
       invoke<boolean>("get_autostart")
         .then((val) => setAutostart(val))
         .catch(() => {});
@@ -58,18 +59,13 @@ export const SettingsModal: React.FC<Props> = ({
     tasksService.saveConfig(config);
 
     try {
-      // 1. Construct OAuth URL with loopback redirect
       const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${encodeURIComponent(
         config.clientId
       )}&redirect_uri=http://127.0.0.1:8085&response_type=code&scope=https://www.googleapis.com/auth/tasks&access_type=offline&prompt=consent`;
 
-      // 2. Open browser
       window.open(authUrl, "_blank");
 
-      // 3. Wait for code via local Rust loopback listener
       const code = await invoke<string>("wait_for_oauth_code");
-
-      // 4. Exchange code for tokens
       await tasksService.exchangeCodeForTokens(code);
 
       setConfig(tasksService.getConfig());
@@ -140,6 +136,26 @@ export const SettingsModal: React.FC<Props> = ({
           {authError && (
             <div style={{ color: "#ff453a", fontSize: "10.5px" }}>{authError}</div>
           )}
+        </div>
+
+        {/* Lock Position Toggle */}
+        <div className="setting-row">
+          <div>
+            <div style={{ fontWeight: 600, display: "flex", alignItems: "center", gap: 5 }}>
+              <Lock size={12} /> Закріпити положення (заблокувати рух)
+            </div>
+            <div style={{ fontSize: "10px", color: "rgba(255,255,255,0.5)" }}>
+              Забороняє перетягування віджета по екрану
+            </div>
+          </div>
+          <input
+            type="checkbox"
+            checked={config.isPositionLocked}
+            onChange={(e) =>
+              setConfig({ ...config, isPositionLocked: e.target.checked })
+            }
+            style={{ width: 16, height: 16, cursor: "pointer" }}
+          />
         </div>
 
         {/* Autostart toggle */}

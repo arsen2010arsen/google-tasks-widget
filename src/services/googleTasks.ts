@@ -20,6 +20,7 @@ const DEFAULT_CONFIG: AppConfig = {
   alwaysOnTop: false,
   autoRefreshMinutes: 5,
   useMockData: true,
+  isPositionLocked: false,
 };
 
 const DEFAULT_MOCK_TASKS: Task[] = [

@@ -23,4 +23,5 @@ export interface AppConfig {
   alwaysOnTop: boolean;
   autoRefreshMinutes: number;
   useMockData: boolean;
+  isPositionLocked: boolean;
 }
