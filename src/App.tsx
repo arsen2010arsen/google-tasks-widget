@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Task, TaskList } from "./types";
+import { Task } from "./types";
 import { tasksService } from "./services/googleTasks";
 import { SettingsModal } from "./components/SettingsModal";
 import {
@@ -11,45 +11,24 @@ import {
   Calendar,
   Check,
   Inbox,
-  ChevronDown,
 } from "lucide-react";
 import "./App.css";
 
 export function App() {
-  const [lists, setLists] = useState<TaskList[]>([]);
-  const [activeListId, setActiveListId] = useState<string>("");
   const [tasks, setTasks] = useState<Task[]>([]);
   const [newTaskTitle, setNewTaskTitle] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [isListMenuOpen, setIsListMenuOpen] = useState(false);
   const [activeSize, setActiveSize] = useState<"S" | "M" | "L">("S");
   const [isAlwaysOnTop, setIsAlwaysOnTop] = useState(
     tasksService.getConfig().alwaysOnTop
   );
 
-  // Load lists
-  const loadLists = useCallback(async () => {
+  // Load all tasks (unified single list)
+  const loadTasks = useCallback(async () => {
     setIsLoading(true);
     try {
-      const fetchedLists = await tasksService.getTaskLists();
-      setLists(fetchedLists);
-      if (fetchedLists.length > 0) {
-        setActiveListId((prev) => (prev ? prev : fetchedLists[0].id));
-      }
-    } catch (err) {
-      console.error("Failed loading lists", err);
-    } finally {
-      setIsLoading(false);
-    }
-  }, []);
-
-  // Load tasks for active list
-  const loadTasks = useCallback(async (listId: string) => {
-    if (!listId) return;
-    setIsLoading(true);
-    try {
-      const fetchedTasks = await tasksService.getTasks(listId);
+      const fetchedTasks = await tasksService.getAllTasks();
       setTasks(fetchedTasks);
     } catch (err) {
       console.error("Failed loading tasks", err);
@@ -59,18 +38,11 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    loadLists();
-  }, [loadLists]);
-
-  useEffect(() => {
-    if (activeListId) {
-      loadTasks(activeListId);
-    }
-  }, [activeListId, loadTasks]);
+    loadTasks();
+  }, [loadTasks]);
 
   // Window drag handler
   const handleStartDrag = async (e: React.MouseEvent) => {
-    // Only drag on left click and when not clicking a button/input
     if (e.button === 0 && !(e.target as HTMLElement).closest("button, input, form")) {
       try {
         await invoke("start_dragging");
@@ -138,17 +110,17 @@ export function App() {
       prev.map((t) => (t.id === task.id ? { ...t, status: nextStatus } : t))
     );
 
-    await tasksService.setTaskStatus(task.listId, task.id, !isCompleted);
+    await tasksService.setTaskStatus(task.id, !isCompleted);
   };
 
   // Add new task
   const handleCreateTask = async (e: React.FormEvent) => {
     e.preventDefault();
     const title = newTaskTitle.trim();
-    if (!title || !activeListId) return;
+    if (!title) return;
 
     setNewTaskTitle("");
-    const created = await tasksService.createTask(activeListId, title);
+    const created = await tasksService.createTask(title);
     setTasks((prev) => [created, ...prev]);
   };
 
@@ -156,13 +128,10 @@ export function App() {
   const handleDeleteTask = async (taskId: string, e: React.MouseEvent) => {
     e.stopPropagation();
     setTasks((prev) => prev.filter((t) => t.id !== taskId));
-    if (activeListId) {
-      await tasksService.deleteTask(activeListId, taskId);
-    }
+    await tasksService.deleteTask(taskId);
   };
 
   const activeTasksCount = tasks.filter((t) => t.status === "needsAction").length;
-  const currentList = lists.find((l) => l.id === activeListId);
 
   return (
     <div className="widget-frame" onMouseDown={handleStartDrag}>
@@ -197,11 +166,33 @@ export function App() {
           </div>
 
           <div className="header-actions">
+            <div className="size-presets">
+              <button
+                className={`size-btn ${activeSize === "S" ? "active" : ""}`}
+                onClick={() => handleSetSize("S")}
+                title="Компактний (290x380)"
+              >
+                S
+              </button>
+              <button
+                className={`size-btn ${activeSize === "M" ? "active" : ""}`}
+                onClick={() => handleSetSize("M")}
+                title="Середній (330x460)"
+              >
+                M
+              </button>
+              <button
+                className={`size-btn ${activeSize === "L" ? "active" : ""}`}
+                onClick={() => handleSetSize("L")}
+                title="Великий (380x560)"
+              >
+                L
+              </button>
+            </div>
+
             <button
               className={`action-icon-btn ${isLoading ? "spinning" : ""}`}
-              onClick={() => {
-                if (activeListId) loadTasks(activeListId);
-              }}
+              onClick={loadTasks}
               title="Оновити задачі"
             >
               <RefreshCw size={11} />
@@ -216,68 +207,12 @@ export function App() {
           </div>
         </div>
 
-        {/* Minimal List Bar & Size Presets (S / M / L) */}
-        <div className="list-bar">
-          <button
-            className="list-dropdown-btn"
-            onClick={() => setIsListMenuOpen(!isListMenuOpen)}
-          >
-            <span>{currentList ? currentList.title : "Списки"}</span>
-            <ChevronDown size={12} />
-          </button>
-
-          <div className="size-presets">
-            <button
-              className={`size-btn ${activeSize === "S" ? "active" : ""}`}
-              onClick={() => handleSetSize("S")}
-              title="Маленький компактний розмір (290x380)"
-            >
-              S
-            </button>
-            <button
-              className={`size-btn ${activeSize === "M" ? "active" : ""}`}
-              onClick={() => handleSetSize("M")}
-              title="Середній розмір (330x460)"
-            >
-              M
-            </button>
-            <button
-              className={`size-btn ${activeSize === "L" ? "active" : ""}`}
-              onClick={() => handleSetSize("L")}
-              title="Великий розмір (380x560)"
-            >
-              L
-            </button>
-          </div>
-        </div>
-
-        {/* Dropdown Menu for Task Lists */}
-        {isListMenuOpen && (
-          <div className="lists-menu">
-            {lists.map((l) => (
-              <div
-                key={l.id}
-                className={`lists-menu-item ${
-                  l.id === activeListId ? "active" : ""
-                }`}
-                onClick={() => {
-                  setActiveListId(l.id);
-                  setIsListMenuOpen(false);
-                }}
-              >
-                <span>{l.title}</span>
-                {l.id === activeListId && <Check size={12} />}
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* Tasks List - Sleek Clean Lines */}
+        {/* Tasks List - Direct under header */}
         <div className="tasks-container">
           {tasks.length === 0 ? (
             <div className="empty-state">
               <Inbox />
-              <span>Немає завдань у цьому списку</span>
+              <span>Немає завдань</span>
             </div>
           ) : (
             tasks.map((task) => {
@@ -358,10 +293,7 @@ export function App() {
         <SettingsModal
           isOpen={isSettingsOpen}
           onClose={() => setIsSettingsOpen(false)}
-          onConfigUpdated={() => {
-            loadLists();
-            if (activeListId) loadTasks(activeListId);
-          }}
+          onConfigUpdated={loadTasks}
           toggleAlwaysOnTop={handleToggleAlwaysOnTop}
         />
       </div>

@@ -1,8 +1,7 @@
-import { Task, TaskList, AppConfig } from "../types";
+import { Task, AppConfig } from "../types";
 
 const CONFIG_KEY = "g_tasks_widget_config";
 const TASKS_STORAGE_KEY = "g_tasks_mock_tasks";
-const LISTS_STORAGE_KEY = "g_tasks_mock_lists";
 
 const DEFAULT_CONFIG: AppConfig = {
   clientId: "",
@@ -15,12 +14,6 @@ const DEFAULT_CONFIG: AppConfig = {
   useMockData: true,
 };
 
-const DEFAULT_MOCK_LISTS: TaskList[] = [
-  { id: "list-1", title: "Мій день" },
-  { id: "list-2", title: "Робота" },
-  { id: "list-3", title: "Особисте" },
-];
-
 const DEFAULT_MOCK_TASKS: Task[] = [
   {
     id: "task-1",
@@ -28,7 +21,7 @@ const DEFAULT_MOCK_TASKS: Task[] = [
     notes: "Зібрати метрики за тиждень",
     status: "needsAction",
     due: new Date().toISOString(),
-    listId: "list-1",
+    listId: "@default",
     updated: new Date().toISOString(),
   },
   {
@@ -37,28 +30,21 @@ const DEFAULT_MOCK_TASKS: Task[] = [
     notes: "Створити OAuth 2.0 Client ID у Google Cloud Console",
     status: "needsAction",
     due: new Date(Date.now() + 86400000).toISOString(),
-    listId: "list-1",
+    listId: "@default",
     updated: new Date().toISOString(),
   },
   {
     id: "task-3",
     title: "Оновити дизайн віджета у стилі macOS",
     status: "completed",
-    listId: "list-1",
+    listId: "@default",
     updated: new Date().toISOString(),
   },
   {
     id: "task-4",
     title: "Код-рев'ю пул-реквесту",
     status: "needsAction",
-    listId: "list-2",
-    updated: new Date().toISOString(),
-  },
-  {
-    id: "task-5",
-    title: "Купити каву в зернах",
-    status: "needsAction",
-    listId: "list-3",
+    listId: "@default",
     updated: new Date().toISOString(),
   },
 ];
@@ -91,61 +77,21 @@ export class GoogleTasksService {
   }
 
   private initMockStorage() {
-    if (!localStorage.getItem(LISTS_STORAGE_KEY)) {
-      localStorage.setItem(LISTS_STORAGE_KEY, JSON.stringify(DEFAULT_MOCK_LISTS));
-    }
     if (!localStorage.getItem(TASKS_STORAGE_KEY)) {
       localStorage.setItem(TASKS_STORAGE_KEY, JSON.stringify(DEFAULT_MOCK_TASKS));
     }
   }
 
-  // --- API / MOCK METHODS ---
-
-  public async getTaskLists(): Promise<TaskList[]> {
-    if (this.config.useMockData || !this.config.accessToken) {
-      const raw = localStorage.getItem(LISTS_STORAGE_KEY);
-      return raw ? JSON.parse(raw) : DEFAULT_MOCK_LISTS;
-    }
-
-    try {
-      const res = await fetch("https://tasks.googleapis.com/tasks/v1/users/@me/lists", {
-        headers: {
-          Authorization: `Bearer ${this.config.accessToken}`,
-        },
-      });
-
-      if (!res.ok) {
-        if (res.status === 401 && this.config.refreshToken) {
-          await this.refreshAccessToken();
-          return this.getTaskLists();
-        }
-        throw new Error(`Google API error: ${res.statusText}`);
-      }
-
-      const data = await res.json();
-      return (data.items || []).map((item: any) => ({
-        id: item.id,
-        title: item.title,
-        updated: item.updated,
-      }));
-    } catch (err) {
-      console.warn("Failed fetching from Google, falling back to cached lists", err);
-      const raw = localStorage.getItem(LISTS_STORAGE_KEY);
-      return raw ? JSON.parse(raw) : DEFAULT_MOCK_LISTS;
-    }
-  }
-
-  public async getTasks(listId: string): Promise<Task[]> {
+  // Unified tasks fetcher (all tasks in one single list)
+  public async getAllTasks(): Promise<Task[]> {
     if (this.config.useMockData || !this.config.accessToken) {
       const raw = localStorage.getItem(TASKS_STORAGE_KEY);
-      const allTasks: Task[] = raw ? JSON.parse(raw) : DEFAULT_MOCK_TASKS;
-      return allTasks.filter((t) => t.listId === listId);
+      return raw ? JSON.parse(raw) : DEFAULT_MOCK_TASKS;
     }
 
     try {
-      const url = `https://tasks.googleapis.com/tasks/v1/lists/${encodeURIComponent(
-        listId
-      )}/tasks?showCompleted=true&showHidden=true`;
+      // Fetch from default task list (@default)
+      const url = `https://tasks.googleapis.com/tasks/v1/lists/@default/tasks?showCompleted=true&showHidden=true`;
       const res = await fetch(url, {
         headers: {
           Authorization: `Bearer ${this.config.accessToken}`,
@@ -155,7 +101,7 @@ export class GoogleTasksService {
       if (!res.ok) {
         if (res.status === 401 && this.config.refreshToken) {
           await this.refreshAccessToken();
-          return this.getTasks(listId);
+          return this.getAllTasks();
         }
         throw new Error(`Google API error: ${res.statusText}`);
       }
@@ -168,24 +114,23 @@ export class GoogleTasksService {
         status: item.status === "completed" ? "completed" : "needsAction",
         due: item.due,
         updated: item.updated,
-        listId: listId,
+        listId: "@default",
       }));
     } catch (err) {
-      console.warn("Failed fetching tasks from Google", err);
+      console.warn("Failed fetching tasks from Google, using cached tasks", err);
       const raw = localStorage.getItem(TASKS_STORAGE_KEY);
-      const allTasks: Task[] = raw ? JSON.parse(raw) : DEFAULT_MOCK_TASKS;
-      return allTasks.filter((t) => t.listId === listId);
+      return raw ? JSON.parse(raw) : DEFAULT_MOCK_TASKS;
     }
   }
 
   public async setTaskStatus(
-    listId: string,
     taskId: string,
-    completed: boolean
+    completed: boolean,
+    listId = "@default"
   ): Promise<void> {
     const status = completed ? "completed" : "needsAction";
 
-    // Always update local cache/mock
+    // Update local cache
     const raw = localStorage.getItem(TASKS_STORAGE_KEY);
     if (raw) {
       const tasks: Task[] = JSON.parse(raw);
@@ -217,21 +162,17 @@ export class GoogleTasksService {
     }
   }
 
-  public async createTask(
-    listId: string,
-    title: string,
-    due?: string
-  ): Promise<Task> {
+  public async createTask(title: string, due?: string): Promise<Task> {
     const newTask: Task = {
       id: `task-${Date.now()}`,
       title,
       status: "needsAction",
       due,
-      listId,
+      listId: "@default",
       updated: new Date().toISOString(),
     };
 
-    // Save to local mock
+    // Save to local cache
     const raw = localStorage.getItem(TASKS_STORAGE_KEY);
     const tasks: Task[] = raw ? JSON.parse(raw) : [];
     tasks.unshift(newTask);
@@ -242,10 +183,7 @@ export class GoogleTasksService {
     }
 
     try {
-      const url = `https://tasks.googleapis.com/tasks/v1/lists/${encodeURIComponent(
-        listId
-      )}/tasks`;
-
+      const url = `https://tasks.googleapis.com/tasks/v1/lists/@default/tasks`;
       const res = await fetch(url, {
         method: "POST",
         headers: {
@@ -269,7 +207,7 @@ export class GoogleTasksService {
     return newTask;
   }
 
-  public async deleteTask(listId: string, taskId: string): Promise<void> {
+  public async deleteTask(taskId: string, listId = "@default"): Promise<void> {
     const raw = localStorage.getItem(TASKS_STORAGE_KEY);
     if (raw) {
       const tasks: Task[] = JSON.parse(raw);
