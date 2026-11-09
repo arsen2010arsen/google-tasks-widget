@@ -3371,6 +3371,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-opener",
  "window-vibrancy",
+ "winreg",
 ]
 
 [[package]]

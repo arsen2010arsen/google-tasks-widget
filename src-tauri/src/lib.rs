@@ -126,25 +126,21 @@ fn get_window_position(window: WebviewWindow) -> Result<(i32, i32), String> {
 fn set_autostart(enabled: bool) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        use std::process::Command;
-        let exe_path = std::env::current_exe().map_err(|e| e.to_string())?;
-        let exe_str = exe_path.to_string_lossy().to_string();
+        use winreg::enums::{HKEY_CURRENT_USER, KEY_SET_VALUE};
+        use winreg::RegKey;
+
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let (key, _) = hkcu
+            .create_subkey("Software\\Microsoft\\Windows\\CurrentVersion\\Run")
+            .map_err(|e| e.to_string())?;
 
         if enabled {
-            let cmd = format!(
-                "Set-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' -Name 'GoogleTasksWidget' -Value '\"{}\"'",
-                exe_str
-            );
-            let _ = Command::new("powershell")
-                .args(["-NoProfile", "-Command", &cmd])
-                .output()
+            let exe_path = std::env::current_exe().map_err(|e| e.to_string())?;
+            let exe_str = format!("\"{}\"", exe_path.to_string_lossy());
+            key.set_value("GoogleTasksWidget", &exe_str)
                 .map_err(|e| e.to_string())?;
         } else {
-            let cmd = "Remove-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' -Name 'GoogleTasksWidget' -ErrorAction SilentlyContinue";
-            let _ = Command::new("powershell")
-                .args(["-NoProfile", "-Command", cmd])
-                .output()
-                .map_err(|e| e.to_string())?;
+            let _ = key.delete_value("GoogleTasksWidget");
         }
     }
     Ok(())
@@ -154,14 +150,17 @@ fn set_autostart(enabled: bool) -> Result<(), String> {
 fn get_autostart() -> Result<bool, String> {
     #[cfg(target_os = "windows")]
     {
-        use std::process::Command;
-        let cmd = "(Get-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' -Name 'GoogleTasksWidget' -ErrorAction SilentlyContinue) -ne $null";
-        let output = Command::new("powershell")
-            .args(["-NoProfile", "-Command", cmd])
-            .output()
-            .map_err(|e| e.to_string())?;
-        let text = String::from_utf8_lossy(&output.stdout).trim().to_lowercase();
-        return Ok(text == "true");
+        use winreg::enums::{HKEY_CURRENT_USER, KEY_READ};
+        use winreg::RegKey;
+
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        if let Ok(key) = hkcu.open_subkey_with_flags(
+            "Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+            KEY_READ,
+        ) {
+            let val: Result<String, _> = key.get_value("GoogleTasksWidget");
+            return Ok(val.is_ok());
+        }
     }
     #[allow(unreachable_code)]
     Ok(false)
