@@ -56,6 +56,7 @@ html, body, #root {
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
   cursor: grab;
   gap: 8px;
+  flex-shrink: 0;
 }
 .widget-header:active {
   cursor: grabbing;
@@ -154,21 +155,43 @@ html, body, #root {
   to { transform: rotate(360deg); }
 }
 
-/* Tasks List */
+/* Tasks List - Left-side Scrollbar */
+.task-list,
 .tasks-container {
-  flex: 1;
-  padding: 8px 12px;
+  flex: 1 1 0%;
+  min-height: 0;
   overflow-y: auto;
+  overflow-x: hidden;
+  padding: 6px 10px 6px 6px;
   display: flex;
   flex-direction: column;
+  direction: rtl; /* Places vertical scrollbar on the left */
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.3) transparent;
 }
 
-.tasks-container::-webkit-scrollbar {
-  width: 4px;
+/* Children restore regular left-to-right direction */
+.task-list > *,
+.tasks-container > * {
+  direction: ltr;
 }
+
+.task-list::-webkit-scrollbar,
+.tasks-container::-webkit-scrollbar {
+  width: 5px;
+}
+.task-list::-webkit-scrollbar-track,
+.tasks-container::-webkit-scrollbar-track {
+  background: transparent;
+}
+.task-list::-webkit-scrollbar-thumb,
 .tasks-container::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.15);
-  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.25);
+  border-radius: 4px;
+}
+.task-list::-webkit-scrollbar-thumb:hover,
+.tasks-container::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.5);
 }
 
 /* Task Item */
@@ -314,7 +337,7 @@ html, body, #root {
   stroke: rgba(255, 255, 255, 0.2);
 }
 
-/* Bottom Quick Add */
+/* Bottom Quick Add - Pinned permanently */
 .widget-footer {
   padding: 7px 10px 8px 10px;
   border-top: 1px solid rgba(255, 255, 255, 0.07);
@@ -322,6 +345,7 @@ html, body, #root {
   flex-direction: column;
   gap: 4px;
   position: relative;
+  flex-shrink: 0;
 }
 .quick-add-form {
   display: flex;
@@ -479,7 +503,7 @@ html, body, #root {
 .resize-grip svg {
   width: 8px;
   height: 8px;
-  stroke: rgba(255, 255, 255, 0.6);
+  stroke: rgba(255, 255, 255, 0.7);
 }
 
 /* Settings Modal */
@@ -489,66 +513,58 @@ html, body, #root {
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(0, 0, 0, 0.65);
-  backdrop-filter: blur(15px);
-  z-index: 30;
+  background: rgba(18, 20, 28, 0.96);
+  backdrop-filter: blur(35px);
+  z-index: 50;
   display: flex;
   flex-direction: column;
-  padding: 12px;
-  animation: fadeIn 0.2s ease;
-}
-@keyframes fadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
+  padding: 12px 14px;
 }
 .modal-header {
   display: flex;
-  align-items: center;
   justify-content: space-between;
-  margin-bottom: 10px;
+  align-items: center;
+  margin-bottom: 12px;
 }
 .modal-title {
   font-size: 13px;
   font-weight: 600;
+  color: #fff;
 }
 .modal-body {
-  flex: 1;
-  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 10px;
+  overflow-y: auto;
+  flex: 1;
+}
+.setting-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
   font-size: 11.5px;
+  color: #fff;
 }
 .setting-group {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 3px;
 }
 .setting-label {
   font-size: 10.5px;
   color: rgba(255, 255, 255, 0.6);
-  font-weight: 500;
 }
 .setting-input {
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 8px;
-  padding: 6px 8px;
-  color: #ffffff;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  padding: 5px 8px;
+  color: #fff;
   font-size: 11.5px;
   outline: none;
-  font-family: inherit;
 }
 .setting-input:focus {
   border-color: #4285f4;
-}
-.setting-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 7px 9px;
-  background: rgba(255, 255, 255, 0.05);
-  border-radius: 8px;
 }
 .save-btn {
   background: #34a853;
@@ -556,8 +572,12 @@ html, body, #root {
   border: none;
   border-radius: 8px;
   padding: 7px;
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 600;
   cursor: pointer;
   margin-top: 6px;
+  transition: opacity 0.15s;
+}
+.save-btn:hover {
+  opacity: 0.9;
 }
