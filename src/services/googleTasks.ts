@@ -34,13 +34,6 @@ const DEFAULT_MOCK_TASKS: Task[] = [
     updated: new Date().toISOString(),
   },
   {
-    id: "task-3",
-    title: "Оновити дизайн віджета у стилі macOS",
-    status: "completed",
-    listId: "@default",
-    updated: new Date().toISOString(),
-  },
-  {
     id: "task-4",
     title: "Код-рев'ю пул-реквесту",
     status: "needsAction",
@@ -89,16 +82,17 @@ export class GoogleTasksService {
     }
   }
 
-  // Unified tasks fetcher (all tasks in one single list)
+  // Unified tasks fetcher (active tasks only)
   public async getAllTasks(): Promise<Task[]> {
     if (this.config.useMockData || !this.config.accessToken) {
       const raw = localStorage.getItem(TASKS_STORAGE_KEY);
-      return raw ? JSON.parse(raw) : DEFAULT_MOCK_TASKS;
+      const all: Task[] = raw ? JSON.parse(raw) : DEFAULT_MOCK_TASKS;
+      return all.filter((t) => t.status !== "completed");
     }
 
     try {
-      // Fetch from default task list (@default)
-      const url = `https://tasks.googleapis.com/tasks/v1/lists/@default/tasks?showCompleted=true&showHidden=true`;
+      // Only fetch active (non-completed) tasks
+      const url = `https://tasks.googleapis.com/tasks/v1/lists/@default/tasks?showCompleted=false&showHidden=false`;
       const res = await fetch(url, {
         headers: {
           Authorization: `Bearer ${this.config.accessToken}`,
@@ -126,13 +120,14 @@ export class GoogleTasksService {
         listId: "@default",
       }));
 
-      // Cache locally for offline use
+      // Cache locally
       localStorage.setItem(TASKS_STORAGE_KEY, JSON.stringify(items));
-      return items;
+      return items.filter((t) => t.status !== "completed");
     } catch (err) {
       console.warn("Failed fetching tasks from Google, using cached tasks", err);
       const raw = localStorage.getItem(TASKS_STORAGE_KEY);
-      return raw ? JSON.parse(raw) : DEFAULT_MOCK_TASKS;
+      const all: Task[] = raw ? JSON.parse(raw) : DEFAULT_MOCK_TASKS;
+      return all.filter((t) => t.status !== "completed");
     }
   }
 

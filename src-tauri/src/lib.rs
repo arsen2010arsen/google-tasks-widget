@@ -28,7 +28,51 @@ fn close_window(window: WebviewWindow) -> Result<(), String> {
 fn set_window_size(window: WebviewWindow, width: f64, height: f64) -> Result<(), String> {
     window
         .set_size(tauri::LogicalSize::new(width, height))
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    #[cfg(target_os = "windows")]
+    {
+        apply_round_corners(&window);
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" {
+    fn CreateRoundRectRgn(x1: i32, y1: i32, x2: i32, y2: i32, w: i32, h: i32) -> isize;
+    fn SetWindowRgn(hWnd: isize, hRgn: isize, bRedraw: i32) -> i32;
+    fn DwmSetWindowAttribute(
+        hwnd: isize,
+        dwAttribute: u32,
+        pvAttribute: *const std::ffi::c_void,
+        cbAttribute: u32,
+    ) -> i32;
+}
+
+#[cfg(target_os = "windows")]
+fn apply_round_corners(window: &WebviewWindow) {
+    if let Ok(hwnd) = window.hwnd() {
+        let hwnd_raw = hwnd.0 as isize;
+        unsafe {
+            // Windows 11 DWM rounded corners preference (DWMWA_WINDOW_CORNER_PREFERENCE = 33, DWMWCP_ROUND = 2)
+            let preference: u32 = 2;
+            let _ = DwmSetWindowAttribute(
+                hwnd_raw,
+                33,
+                &preference as *const _ as *const std::ffi::c_void,
+                std::mem::size_of::<u32>() as u32,
+            );
+
+            // GDI RoundRect Region clip to guarantee NO square corners are ever rendered
+            if let Ok(size) = window.outer_size() {
+                let rgn = CreateRoundRectRgn(0, 0, size.width as i32, size.height as i32, 40, 40);
+                if rgn != 0 {
+                    let _ = SetWindowRgn(hwnd_raw, rgn, 1);
+                }
+            }
+        }
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -90,6 +134,7 @@ pub fn run() {
                 {
                     // Apply native acrylic vibrancy on Windows
                     let _ = window_vibrancy::apply_acrylic(&window, Some((18, 20, 28, 120)));
+                    apply_round_corners(&window);
                 }
             }
             Ok(())

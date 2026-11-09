@@ -21,28 +21,28 @@ html, body, #root {
   overflow: hidden;
 }
 
-/* Outer Desktop Frame */
+/* Outer Desktop Frame - 0 padding to prevent any square corner exposure */
 .widget-frame {
   width: 100%;
   height: 100%;
-  padding: 6px;
+  padding: 0;
+  margin: 0;
   display: flex;
   flex-direction: column;
 }
 
 /* Glass Container - Authentic Compact macOS Widget */
 .glass-container {
+  width: 100%;
+  height: 100%;
   flex: 1;
   display: flex;
   flex-direction: column;
-  background: rgba(22, 24, 32, 0.72);
+  background: rgba(20, 22, 30, 0.78);
   backdrop-filter: blur(40px) saturate(190%);
   -webkit-backdrop-filter: blur(40px) saturate(190%);
   border: 1px solid rgba(255, 255, 255, 0.16);
-  border-radius: 22px;
-  box-shadow:
-    0 16px 36px -8px rgba(0, 0, 0, 0.55),
-    0 1px 0 rgba(255, 255, 255, 0.15) inset;
+  border-radius: 20px;
   overflow: hidden;
   position: relative;
 }
@@ -211,7 +211,7 @@ html, body, #root {
   gap: 9px;
   padding: 7px 4px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-  transition: background 0.15s;
+  transition: background 0.15s, opacity 0.2s, transform 0.2s;
   border-radius: 8px;
   cursor: pointer;
 }
@@ -220,13 +220,6 @@ html, body, #root {
 }
 .task-row:hover {
   background: rgba(255, 255, 255, 0.06);
-}
-.task-row.completed {
-  opacity: 0.45;
-}
-.task-row.completed .task-title {
-  text-decoration: line-through;
-  color: rgba(255, 255, 255, 0.4);
 }
 
 /* Apple Checkbox Button */
@@ -247,6 +240,7 @@ html, body, #root {
 .apple-checkbox:hover {
   transform: scale(1.15);
   border-color: #34a853;
+  background: rgba(52, 168, 83, 0.15);
 }
 .apple-checkbox.checked {
   background: #34a853;

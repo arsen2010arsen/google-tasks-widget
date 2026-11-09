@@ -24,7 +24,7 @@ export function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [activeSize, setActiveSize] = useState<"S" | "M" | "L">("S");
 
-  // Load all tasks
+  // Load active tasks only
   const loadTasks = useCallback(async () => {
     setIsLoading(true);
     try {
@@ -39,7 +39,6 @@ export function App() {
 
   useEffect(() => {
     loadTasks();
-    // Auto-refresh interval (every 5 min or config)
     const interval = setInterval(() => {
       loadTasks();
     }, 5 * 60 * 1000);
@@ -94,20 +93,16 @@ export function App() {
     }
   };
 
-  // Toggle task completion (Checked / Unchecked)
-  const handleToggleTask = async (task: Task) => {
-    const isCompleted = task.status === "completed";
-    const nextStatus = isCompleted ? "needsAction" : "completed";
+  // Complete task - immediately removes it from the list
+  const handleCompleteTask = async (task: Task) => {
+    // Immediately remove from UI list
+    setTasks((prev) => prev.filter((t) => t.id !== task.id));
 
-    // Immediate optimistic UI update
-    setTasks((prev) =>
-      prev.map((t) => (t.id === task.id ? { ...t, status: nextStatus } : t))
-    );
-
+    // Update in storage and Google Tasks API
     try {
-      await tasksService.setTaskStatus(task.id, !isCompleted);
+      await tasksService.setTaskStatus(task.id, true);
     } catch (err) {
-      console.error("Failed to update task status", err);
+      console.error("Failed to complete task", err);
     }
   };
 
@@ -154,7 +149,7 @@ export function App() {
     }
   };
 
-  const activeTasksCount = tasks.filter((t) => t.status === "needsAction").length;
+  const activeTasksCount = tasks.length;
 
   return (
     <div className="widget-frame">
@@ -226,60 +221,57 @@ export function App() {
           {tasks.length === 0 ? (
             <div className="empty-state">
               <Inbox />
-              <span>Немає завдань</span>
+              <span>Усі завдання виконано!</span>
             </div>
           ) : (
-            tasks.map((task) => {
-              const isDone = task.status === "completed";
-              return (
-                <div
-                  key={task.id}
-                  className={`task-row ${isDone ? "completed" : ""}`}
-                  onClick={() => handleToggleTask(task)}
+            tasks.map((task) => (
+              <div
+                key={task.id}
+                className="task-row"
+                onClick={() => handleCompleteTask(task)}
+              >
+                <button
+                  type="button"
+                  className="apple-checkbox"
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleCompleteTask(task);
+                  }}
+                  title="Позначити виконаним (видалити зі списку)"
                 >
-                  <button
-                    type="button"
-                    className={`apple-checkbox ${isDone ? "checked" : ""}`}
-                    onMouseDown={(e) => e.stopPropagation()}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleToggleTask(task);
-                    }}
-                    title={isDone ? "Позначити як невиконане" : "Виконати"}
-                  >
-                    {isDone && <Check />}
-                  </button>
+                  <Check />
+                </button>
 
-                  <div className="task-body">
-                    <span className="task-title">{task.title}</span>
-                    {task.notes && (
-                      <span className="task-notes">{task.notes}</span>
-                    )}
-                    {task.due && !isDone && (
-                      <div className="task-badges">
-                        <span className="badge-due today">
-                          <Calendar size={9} />
-                          {new Date(task.due).toLocaleDateString("uk-UA", {
-                            day: "numeric",
-                            month: "short",
-                          })}
-                        </span>
-                      </div>
-                    )}
-                  </div>
-
-                  <button
-                    type="button"
-                    className="task-del-btn"
-                    onMouseDown={(e) => e.stopPropagation()}
-                    onClick={(e) => handleDeleteTask(task.id, e)}
-                    title="Видалити завдання"
-                  >
-                    <Trash2 size={12} />
-                  </button>
+                <div className="task-body">
+                  <span className="task-title">{task.title}</span>
+                  {task.notes && (
+                    <span className="task-notes">{task.notes}</span>
+                  )}
+                  {task.due && (
+                    <div className="task-badges">
+                      <span className="badge-due today">
+                        <Calendar size={9} />
+                        {new Date(task.due).toLocaleDateString("uk-UA", {
+                          day: "numeric",
+                          month: "short",
+                        })}
+                      </span>
+                    </div>
+                  )}
                 </div>
-              );
-            })
+
+                <button
+                  type="button"
+                  className="task-del-btn"
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={(e) => handleDeleteTask(task.id, e)}
+                  title="Видалити завдання"
+                >
+                  <Trash2 size={12} />
+                </button>
+              </div>
+            ))
           )}
         </div>
 
