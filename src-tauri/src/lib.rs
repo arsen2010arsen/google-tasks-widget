@@ -26,7 +26,6 @@ fn urlencoding_decode(s: &str) -> String {
 
 #[tauri::command]
 async fn wait_for_oauth_code() -> Result<String, String> {
-    // Bind to 127.0.0.1:8085 loopback port
     let listener = TcpListener::bind("127.0.0.1:8085").map_err(|e| format!("Port 8085 busy: {}", e))?;
 
     for stream in listener.incoming() {
@@ -59,6 +58,15 @@ fn start_dragging(window: WebviewWindow) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn reset_window_position(window: WebviewWindow) -> Result<(), String> {
+    let _ = window.unminimize();
+    let _ = window.show();
+    let _ = window.center();
+    let _ = window.set_focus();
+    Ok(())
+}
+
+#[tauri::command]
 fn set_always_on_top(window: WebviewWindow, always_on_top: bool) -> Result<(), String> {
     window.set_always_on_top(always_on_top).map_err(|e| e.to_string())
 }
@@ -75,7 +83,6 @@ fn hide_window(window: WebviewWindow) -> Result<(), String> {
 
 #[tauri::command]
 fn close_window(window: WebviewWindow) -> Result<(), String> {
-    // Instead of terminating the app, hide to tray so it stays resident on desktop
     window.hide().map_err(|e| e.to_string())
 }
 
@@ -93,14 +100,25 @@ fn set_window_size(window: WebviewWindow, width: f64, height: f64) -> Result<(),
 
 #[tauri::command]
 fn set_window_position(window: WebviewWindow, x: f64, y: f64) -> Result<(), String> {
-    window
-        .set_position(tauri::LogicalPosition::new(x, y))
-        .map_err(|e| e.to_string())
+    // Ensure coordinates are valid positive screen coordinates
+    if x >= 0.0 && y >= 0.0 {
+        window
+            .set_position(tauri::LogicalPosition::new(x, y))
+            .map_err(|e| e.to_string())?;
+    } else {
+        let _ = window.center();
+    }
+    let _ = window.unminimize();
+    let _ = window.show();
+    Ok(())
 }
 
 #[tauri::command]
 fn get_window_position(window: WebviewWindow) -> Result<(i32, i32), String> {
     let pos = window.outer_position().map_err(|e| e.to_string())?;
+    if pos.x < 0 || pos.y < 0 {
+        return Err("Window coordinates are negative (minimized)".to_string());
+    }
     Ok((pos.x, pos.y))
 }
 
@@ -142,24 +160,22 @@ fn get_autostart() -> Result<bool, String> {
             .args(["-NoProfile", "-Command", cmd])
             .output()
             .map_err(|e| e.to_string())?;
-
-        let result = String::from_utf8_lossy(&output.stdout).trim().to_lowercase();
-        return Ok(result == "true");
+        let text = String::from_utf8_lossy(&output.stdout).trim().to_lowercase();
+        return Ok(text == "true");
     }
     #[allow(unreachable_code)]
     Ok(false)
 }
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             // Build System Tray Menu
-            let show_item = MenuItem::with_id(app, "show", "Показати віджет", true, None::<&str>)?;
-            let hide_item = MenuItem::with_id(app, "hide", "Сховати віджет", true, None::<&str>)?;
+            let show_item = MenuItem::with_id(app, "show", "Показати віджет на екрані", true, None::<&str>)?;
+            let center_item = MenuItem::with_id(app, "center", "Перемістити в центр екрана", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "Вийти з віджета", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show_item, &hide_item, &quit_item])?;
+            let menu = Menu::with_items(app, &[&show_item, &center_item, &quit_item])?;
 
             if let Some(icon) = app.default_window_icon() {
                 let _ = TrayIconBuilder::new()
@@ -169,13 +185,17 @@ pub fn run() {
                     .on_menu_event(|app, event| match event.id.as_ref() {
                         "show" => {
                             if let Some(w) = app.get_webview_window("main") {
+                                let _ = w.unminimize();
                                 let _ = w.show();
                                 let _ = w.set_focus();
                             }
                         }
-                        "hide" => {
+                        "center" => {
                             if let Some(w) = app.get_webview_window("main") {
-                                let _ = w.hide();
+                                let _ = w.unminimize();
+                                let _ = w.show();
+                                let _ = w.center();
+                                let _ = w.set_focus();
                             }
                         }
                         "quit" => {
@@ -192,22 +212,25 @@ pub fn run() {
                         {
                             let app = tray.app_handle();
                             if let Some(w) = app.get_webview_window("main") {
-                                if w.is_visible().unwrap_or(false) {
-                                    let _ = w.hide();
-                                } else {
-                                    let _ = w.show();
-                                    let _ = w.set_focus();
-                                }
+                                let _ = w.unminimize();
+                                let _ = w.show();
+                                let _ = w.set_focus();
                             }
                         }
                     })
                     .build(app);
             }
 
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.unminimize();
+                let _ = w.show();
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             start_dragging,
+            reset_window_position,
             set_always_on_top,
             minimize_window,
             hide_window,

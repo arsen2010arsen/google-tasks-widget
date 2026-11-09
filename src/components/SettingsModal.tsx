@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { AppConfig } from "../types";
 import { tasksService } from "../services/googleTasks";
-import { X, HelpCircle, LogIn, Power, Monitor, Lock } from "lucide-react";
+import { X, HelpCircle, LogIn, Power, Monitor, Lock, Crosshair } from "lucide-react";
 
 interface Props {
   isOpen: boolean;
@@ -78,6 +78,15 @@ export const SettingsModal: React.FC<Props> = ({
     }
   };
 
+  const handleResetPosition = async () => {
+    localStorage.removeItem("g_tasks_window_position");
+    try {
+      await invoke("reset_window_position");
+    } catch (err) {
+      console.warn("reset_window_position error", err);
+    }
+  };
+
   const handleExitApp = async () => {
     try {
       await invoke("exit_app");
@@ -103,8 +112,7 @@ export const SettingsModal: React.FC<Props> = ({
               Вхід у Google Tasks
             </span>
             {config.accessToken && !config.useMockData && (
-              <span style={{ color: "#34a853", fontSize: "10.5px", fontWeight: 600 }}>
-                ● Підключено
+              <span style={{ color: "#34a853", fontSize: "10.5px", fontWeight: 600 }}>\n                ● Підключено
               </span>
             )}
           </div>
@@ -176,6 +184,33 @@ export const SettingsModal: React.FC<Props> = ({
           />
         </div>
 
+        {/* Center widget button */}
+        <div className="setting-row">
+          <div>
+            <div style={{ fontWeight: 600, display: "flex", alignItems: "center", gap: 5 }}>
+              <Crosshair size={12} /> Центрувати віджет
+            </div>
+            <div style={{ fontSize: "10px", color: "rgba(255,255,255,0.5)" }}>
+              Повернути віджет у центр екрана, якщо він загубився
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={handleResetPosition}
+            style={{
+              background: "rgba(255, 255, 255, 0.1)",
+              border: "1px solid rgba(255, 255, 255, 0.2)",
+              color: "#fff",
+              borderRadius: "6px",
+              padding: "4px 8px",
+              fontSize: "11px",
+              cursor: "pointer",
+            }}
+          >
+            В центр
+          </button>
+        </div>
+
         {/* Mock mode toggle */}
         <div className="setting-row">
           <div>
@@ -208,11 +243,11 @@ export const SettingsModal: React.FC<Props> = ({
         </div>
 
         {showHelp && (
-          <div style={{ background: "rgba(255, 255, 255, 0.05)", border: "1px solid rgba(255, 255, 255, 0.1)", padding: 8, borderRadius: 8, fontSize: "10.5px", lineHeight: "1.4" }}>
-            1. Зайдіть у <b>console.cloud.google.com</b><br />
-            2. Увімкніть <b>Google Tasks API</b><br />
-            3. Створіть <b>OAuth Client ID</b> (Desktop Application)<br />
-            4. Вставте сюди Client ID та Client Secret.
+          <div className="help-box" style={{ fontSize: "10px", lineHeight: "1.4", color: "rgba(255,255,255,0.7)", background: "rgba(0,0,0,0.3)", padding: "8px", borderRadius: "8px" }}>
+            1. Зайдіть у <b>Google Cloud Console</b>.<br />
+            2. Увімкніть <b>Google Tasks API</b>.<br />
+            3. Створіть OAuth Client ID (тип: Desktop application).<br />
+            4. Вставте отримані ID та Secret у поля нижче та натисніть "Зберегти", потім "Увійти через Google".
           </div>
         )}
 

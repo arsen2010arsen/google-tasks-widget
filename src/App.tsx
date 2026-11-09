@@ -49,14 +49,33 @@ export function App() {
     }
   }, []);
 
-  // Restore saved window position on startup
+  // Restore saved window position on startup with strict coordinate bounds
   useEffect(() => {
     const raw = localStorage.getItem(POS_KEY);
     if (raw) {
       try {
         const { x, y } = JSON.parse(raw);
-        invoke("set_window_position", { x: Number(x), y: Number(y) }).catch(() => {});
-      } catch {}
+        if (
+          typeof x === "number" &&
+          typeof y === "number" &&
+          x >= 10 &&
+          y >= 10 &&
+          x < 5000 &&
+          y < 5000
+        ) {
+          invoke("set_window_position", { x: Number(x), y: Number(y) }).catch(() => {
+            invoke("reset_window_position").catch(() => {});
+          });
+        } else {
+          localStorage.removeItem(POS_KEY);
+          invoke("reset_window_position").catch(() => {});
+        }
+      } catch {
+        localStorage.removeItem(POS_KEY);
+        invoke("reset_window_position").catch(() => {});
+      }
+    } else {
+      invoke("reset_window_position").catch(() => {});
     }
   }, []);
 
@@ -78,7 +97,16 @@ export function App() {
         setTimeout(async () => {
           try {
             const [x, y] = await invoke<[number, number]>("get_window_position");
-            localStorage.setItem(POS_KEY, JSON.stringify({ x, y }));
+            if (
+              typeof x === "number" &&
+              typeof y === "number" &&
+              x >= 10 &&
+              y >= 10 &&
+              x < 5000 &&
+              y < 5000
+            ) {
+              localStorage.setItem(POS_KEY, JSON.stringify({ x, y }));
+            }
           } catch {}
         }, 500);
       } catch (err) {
@@ -123,20 +151,30 @@ export function App() {
     const title = newTaskTitle.trim();
     if (!title) return;
 
+    const optimisticId = "temp-" + Date.now();
+    const newTask: Task = {
+      id: optimisticId,
+      title,
+      status: "needsAction",
+      due: selectedDue || undefined,
+      updated: new Date().toISOString(),
+      listId: '@default',
+    };
+
+    setTasks((prev) => [newTask, ...prev]);
     setNewTaskTitle("");
-    const dueToSave = selectedDue;
     setSelectedDue(null);
     setIsDatePickerOpen(false);
 
     try {
-      const created = await tasksService.createTask(title, dueToSave || undefined);
-      setTasks((prev) => [created, ...prev]);
+      const created = await tasksService.createTask(title, selectedDue || undefined);
+      setTasks((prev) => prev.map((t) => (t.id === optimisticId ? created : t)));
     } catch (err) {
-      console.error("Failed to create task", err);
+      console.error("Failed creating task", err);
     }
   };
 
-  // Inline editing save
+  // Inline edit
   const handleStartEdit = (task: Task, e: React.MouseEvent) => {
     e.stopPropagation();
     setEditingTaskId(task.id);
@@ -229,24 +267,26 @@ export function App() {
             </div>
 
             <button
-              className={`action-icon-btn ${isLoading ? "spinning" : ""}`}
+              className="action-icon-btn"
               onClick={loadTasks}
-              title="Оновити задачі"
+              title="Оновити список завдань"
+              disabled={isLoading}
             >
-              <RefreshCw size={11} />
+              <RefreshCw size={13} className={isLoading ? "spin" : ""} />
             </button>
+
             <button
               className="action-icon-btn"
               onClick={() => setIsSettingsOpen(true)}
               title="Налаштування"
             >
-              <Settings size={11} />
+              <Settings size={13} />
             </button>
           </div>
         </div>
 
-        {/* Tasks List */}
-        <div className="tasks-container">
+        {/* Unified Task List */}
+        <div className="task-list">
           {tasks.length === 0 ? (
             <div className="empty-state">
               <Inbox />
