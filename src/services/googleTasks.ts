@@ -1,0 +1,328 @@
+import { Task, TaskList, AppConfig } from "../types";
+
+const CONFIG_KEY = "g_tasks_widget_config";
+const TASKS_STORAGE_KEY = "g_tasks_mock_tasks";
+const LISTS_STORAGE_KEY = "g_tasks_mock_lists";
+
+const DEFAULT_CONFIG: AppConfig = {
+  clientId: "",
+  clientSecret: "",
+  apiKey: "",
+  accessToken: "",
+  refreshToken: "",
+  alwaysOnTop: false,
+  autoRefreshMinutes: 5,
+  useMockData: true,
+};
+
+const DEFAULT_MOCK_LISTS: TaskList[] = [
+  { id: "list-1", title: "Мій день" },
+  { id: "list-2", title: "Робота" },
+  { id: "list-3", title: "Особисте" },
+];
+
+const DEFAULT_MOCK_TASKS: Task[] = [
+  {
+    id: "task-1",
+    title: "Підготувати звіт для команди",
+    notes: "Зібрати метрики за тиждень",
+    status: "needsAction",
+    due: new Date().toISOString(),
+    listId: "list-1",
+    updated: new Date().toISOString(),
+  },
+  {
+    id: "task-2",
+    title: "Налаштувати Google Tasks API ключ",
+    notes: "Створити OAuth 2.0 Client ID у Google Cloud Console",
+    status: "needsAction",
+    due: new Date(Date.now() + 86400000).toISOString(),
+    listId: "list-1",
+    updated: new Date().toISOString(),
+  },
+  {
+    id: "task-3",
+    title: "Оновити дизайн віджета у стилі macOS",
+    status: "completed",
+    listId: "list-1",
+    updated: new Date().toISOString(),
+  },
+  {
+    id: "task-4",
+    title: "Код-рев'ю пул-реквесту",
+    status: "needsAction",
+    listId: "list-2",
+    updated: new Date().toISOString(),
+  },
+  {
+    id: "task-5",
+    title: "Купити каву в зернах",
+    status: "needsAction",
+    listId: "list-3",
+    updated: new Date().toISOString(),
+  },
+];
+
+export class GoogleTasksService {
+  private config: AppConfig;
+
+  constructor() {
+    this.config = this.loadConfig();
+    this.initMockStorage();
+  }
+
+  public getConfig(): AppConfig {
+    return { ...this.config };
+  }
+
+  public saveConfig(newConfig: Partial<AppConfig>) {
+    this.config = { ...this.config, ...newConfig };
+    localStorage.setItem(CONFIG_KEY, JSON.stringify(this.config));
+  }
+
+  private loadConfig(): AppConfig {
+    const raw = localStorage.getItem(CONFIG_KEY);
+    if (!raw) return DEFAULT_CONFIG;
+    try {
+      return { ...DEFAULT_CONFIG, ...JSON.parse(raw) };
+    } catch {
+      return DEFAULT_CONFIG;
+    }
+  }
+
+  private initMockStorage() {
+    if (!localStorage.getItem(LISTS_STORAGE_KEY)) {
+      localStorage.setItem(LISTS_STORAGE_KEY, JSON.stringify(DEFAULT_MOCK_LISTS));
+    }
+    if (!localStorage.getItem(TASKS_STORAGE_KEY)) {
+      localStorage.setItem(TASKS_STORAGE_KEY, JSON.stringify(DEFAULT_MOCK_TASKS));
+    }
+  }
+
+  // --- API / MOCK METHODS ---
+
+  public async getTaskLists(): Promise<TaskList[]> {
+    if (this.config.useMockData || !this.config.accessToken) {
+      const raw = localStorage.getItem(LISTS_STORAGE_KEY);
+      return raw ? JSON.parse(raw) : DEFAULT_MOCK_LISTS;
+    }
+
+    try {
+      const res = await fetch("https://tasks.googleapis.com/tasks/v1/users/@me/lists", {
+        headers: {
+          Authorization: `Bearer ${this.config.accessToken}`,
+        },
+      });
+
+      if (!res.ok) {
+        if (res.status === 401 && this.config.refreshToken) {
+          await this.refreshAccessToken();
+          return this.getTaskLists();
+        }
+        throw new Error(`Google API error: ${res.statusText}`);
+      }
+
+      const data = await res.json();
+      return (data.items || []).map((item: any) => ({
+        id: item.id,
+        title: item.title,
+        updated: item.updated,
+      }));
+    } catch (err) {
+      console.warn("Failed fetching from Google, falling back to cached lists", err);
+      const raw = localStorage.getItem(LISTS_STORAGE_KEY);
+      return raw ? JSON.parse(raw) : DEFAULT_MOCK_LISTS;
+    }
+  }
+
+  public async getTasks(listId: string): Promise<Task[]> {
+    if (this.config.useMockData || !this.config.accessToken) {
+      const raw = localStorage.getItem(TASKS_STORAGE_KEY);
+      const allTasks: Task[] = raw ? JSON.parse(raw) : DEFAULT_MOCK_TASKS;
+      return allTasks.filter((t) => t.listId === listId);
+    }
+
+    try {
+      const url = `https://tasks.googleapis.com/tasks/v1/lists/${encodeURIComponent(
+        listId
+      )}/tasks?showCompleted=true&showHidden=true`;
+      const res = await fetch(url, {
+        headers: {
+          Authorization: `Bearer ${this.config.accessToken}`,
+        },
+      });
+
+      if (!res.ok) {
+        if (res.status === 401 && this.config.refreshToken) {
+          await this.refreshAccessToken();
+          return this.getTasks(listId);
+        }
+        throw new Error(`Google API error: ${res.statusText}`);
+      }
+
+      const data = await res.json();
+      return (data.items || []).map((item: any) => ({
+        id: item.id,
+        title: item.title || "(Без назви)",
+        notes: item.notes,
+        status: item.status === "completed" ? "completed" : "needsAction",
+        due: item.due,
+        updated: item.updated,
+        listId: listId,
+      }));
+    } catch (err) {
+      console.warn("Failed fetching tasks from Google", err);
+      const raw = localStorage.getItem(TASKS_STORAGE_KEY);
+      const allTasks: Task[] = raw ? JSON.parse(raw) : DEFAULT_MOCK_TASKS;
+      return allTasks.filter((t) => t.listId === listId);
+    }
+  }
+
+  public async setTaskStatus(
+    listId: string,
+    taskId: string,
+    completed: boolean
+  ): Promise<void> {
+    const status = completed ? "completed" : "needsAction";
+
+    // Always update local cache/mock
+    const raw = localStorage.getItem(TASKS_STORAGE_KEY);
+    if (raw) {
+      const tasks: Task[] = JSON.parse(raw);
+      const idx = tasks.findIndex((t) => t.id === taskId);
+      if (idx !== -1) {
+        tasks[idx].status = status;
+        tasks[idx].updated = new Date().toISOString();
+        localStorage.setItem(TASKS_STORAGE_KEY, JSON.stringify(tasks));
+      }
+    }
+
+    if (this.config.useMockData || !this.config.accessToken) return;
+
+    try {
+      const url = `https://tasks.googleapis.com/tasks/v1/lists/${encodeURIComponent(
+        listId
+      )}/tasks/${encodeURIComponent(taskId)}`;
+
+      await fetch(url, {
+        method: "PATCH",
+        headers: {
+          Authorization: `Bearer ${this.config.accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ status }),
+      });
+    } catch (err) {
+      console.error("Failed to patch task status on Google", err);
+    }
+  }
+
+  public async createTask(
+    listId: string,
+    title: string,
+    due?: string
+  ): Promise<Task> {
+    const newTask: Task = {
+      id: `task-${Date.now()}`,
+      title,
+      status: "needsAction",
+      due,
+      listId,
+      updated: new Date().toISOString(),
+    };
+
+    // Save to local mock
+    const raw = localStorage.getItem(TASKS_STORAGE_KEY);
+    const tasks: Task[] = raw ? JSON.parse(raw) : [];
+    tasks.unshift(newTask);
+    localStorage.setItem(TASKS_STORAGE_KEY, JSON.stringify(tasks));
+
+    if (this.config.useMockData || !this.config.accessToken) {
+      return newTask;
+    }
+
+    try {
+      const url = `https://tasks.googleapis.com/tasks/v1/lists/${encodeURIComponent(
+        listId
+      )}/tasks`;
+
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${this.config.accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          title,
+          due,
+        }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        newTask.id = data.id;
+      }
+    } catch (err) {
+      console.error("Failed to create task on Google API", err);
+    }
+
+    return newTask;
+  }
+
+  public async deleteTask(listId: string, taskId: string): Promise<void> {
+    const raw = localStorage.getItem(TASKS_STORAGE_KEY);
+    if (raw) {
+      const tasks: Task[] = JSON.parse(raw);
+      const filtered = tasks.filter((t) => t.id !== taskId);
+      localStorage.setItem(TASKS_STORAGE_KEY, JSON.stringify(filtered));
+    }
+
+    if (this.config.useMockData || !this.config.accessToken) return;
+
+    try {
+      const url = `https://tasks.googleapis.com/tasks/v1/lists/${encodeURIComponent(
+        listId
+      )}/tasks/${encodeURIComponent(taskId)}`;
+
+      await fetch(url, {
+        method: "DELETE",
+        headers: {
+          Authorization: `Bearer ${this.config.accessToken}`,
+        },
+      });
+    } catch (err) {
+      console.error("Failed to delete task from Google API", err);
+    }
+  }
+
+  public async refreshAccessToken(): Promise<boolean> {
+    if (!this.config.refreshToken || !this.config.clientId) return false;
+
+    try {
+      const params = new URLSearchParams({
+        client_id: this.config.clientId,
+        client_secret: this.config.clientSecret,
+        refresh_token: this.config.refreshToken,
+        grant_type: "refresh_token",
+      });
+
+      const res = await fetch("https://oauth2.googleapis.com/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: params.toString(),
+      });
+
+      if (!res.ok) return false;
+      const data = await res.json();
+      if (data.access_token) {
+        this.saveConfig({ accessToken: data.access_token });
+        return true;
+      }
+    } catch (err) {
+      console.error("Error refreshing Google access token", err);
+    }
+    return false;
+  }
+}
+
+export const tasksService = new GoogleTasksService();
