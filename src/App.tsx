@@ -11,6 +11,7 @@ import {
   Calendar,
   Check,
   Inbox,
+  ChevronDown,
 } from "lucide-react";
 import "./App.css";
 
@@ -21,6 +22,8 @@ export function App() {
   const [newTaskTitle, setNewTaskTitle] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isListMenuOpen, setIsListMenuOpen] = useState(false);
+  const [activeSize, setActiveSize] = useState<"S" | "M" | "L">("S");
   const [isAlwaysOnTop, setIsAlwaysOnTop] = useState(
     tasksService.getConfig().alwaysOnTop
   );
@@ -65,12 +68,24 @@ export function App() {
     }
   }, [activeListId, loadTasks]);
 
+  // Window drag handler
+  const handleStartDrag = async (e: React.MouseEvent) => {
+    // Only drag on left click and when not clicking a button/input
+    if (e.button === 0 && !(e.target as HTMLElement).closest("button, input, form")) {
+      try {
+        await invoke("start_dragging");
+      } catch (err) {
+        console.warn("start_dragging error", err);
+      }
+    }
+  };
+
   // Window actions via Tauri Rust backend
   const handleClose = async () => {
     try {
       await invoke("close_window");
     } catch (e) {
-      console.warn("Tauri close_window unavailable in browser mode", e);
+      console.warn("close_window error", e);
     }
   };
 
@@ -78,7 +93,7 @@ export function App() {
     try {
       await invoke("minimize_window");
     } catch (e) {
-      console.warn("Tauri minimize_window unavailable in browser mode", e);
+      console.warn("minimize_window error", e);
     }
   };
 
@@ -89,7 +104,27 @@ export function App() {
     try {
       await invoke("set_always_on_top", { alwaysOnTop: nextVal });
     } catch (e) {
-      console.warn("Tauri set_always_on_top unavailable in browser mode", e);
+      console.warn("set_always_on_top error", e);
+    }
+  };
+
+  // Preset sizes for laptops / compact screens
+  const handleSetSize = async (size: "S" | "M" | "L") => {
+    setActiveSize(size);
+    let width = 290;
+    let height = 380;
+    if (size === "M") {
+      width = 330;
+      height = 460;
+    } else if (size === "L") {
+      width = 380;
+      height = 560;
+    }
+
+    try {
+      await invoke("set_window_size", { width, height });
+    } catch (err) {
+      console.warn("set_window_size error", err);
     }
   };
 
@@ -127,12 +162,13 @@ export function App() {
   };
 
   const activeTasksCount = tasks.filter((t) => t.status === "needsAction").length;
+  const currentList = lists.find((l) => l.id === activeListId);
 
   return (
-    <div className="widget-frame">
+    <div className="widget-frame" onMouseDown={handleStartDrag}>
       <div className="glass-container">
-        {/* Header - macOS Traffic Lights & Title (Draggable region) */}
-        <div className="widget-header" data-tauri-drag-region>
+        {/* Header - Circular controls only */}
+        <div className="widget-header" onMouseDown={handleStartDrag}>
           <div className="traffic-lights">
             <button
               className="traffic-btn close"
@@ -155,12 +191,7 @@ export function App() {
             />
           </div>
 
-          <div className="header-center" data-tauri-drag-region>
-            <div className="g-logo">
-              <svg viewBox="0 0 24 24">
-                <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" />
-              </svg>
-            </div>
+          <div className="header-center" onMouseDown={handleStartDrag}>
             <span className="header-title">Google Tasks</span>
             <span className="badge-count">{activeTasksCount}</span>
           </div>
@@ -173,34 +204,75 @@ export function App() {
               }}
               title="Оновити задачі"
             >
-              <RefreshCw size={13} />
+              <RefreshCw size={11} />
             </button>
             <button
               className="action-icon-btn"
               onClick={() => setIsSettingsOpen(true)}
               title="Налаштування"
             >
-              <Settings size={13} />
+              <Settings size={11} />
             </button>
           </div>
         </div>
 
-        {/* Task Lists Bar */}
-        <div className="list-tabs-container">
-          {lists.map((list) => (
-            <div
-              key={list.id}
-              className={`list-tab-item ${
-                list.id === activeListId ? "active" : ""
-              }`}
-              onClick={() => setActiveListId(list.id)}
+        {/* Minimal List Bar & Size Presets (S / M / L) */}
+        <div className="list-bar">
+          <button
+            className="list-dropdown-btn"
+            onClick={() => setIsListMenuOpen(!isListMenuOpen)}
+          >
+            <span>{currentList ? currentList.title : "Списки"}</span>
+            <ChevronDown size={12} />
+          </button>
+
+          <div className="size-presets">
+            <button
+              className={`size-btn ${activeSize === "S" ? "active" : ""}`}
+              onClick={() => handleSetSize("S")}
+              title="Маленький компактний розмір (290x380)"
             >
-              {list.title}
-            </div>
-          ))}
+              S
+            </button>
+            <button
+              className={`size-btn ${activeSize === "M" ? "active" : ""}`}
+              onClick={() => handleSetSize("M")}
+              title="Середній розмір (330x460)"
+            >
+              M
+            </button>
+            <button
+              className={`size-btn ${activeSize === "L" ? "active" : ""}`}
+              onClick={() => handleSetSize("L")}
+              title="Великий розмір (380x560)"
+            >
+              L
+            </button>
+          </div>
         </div>
 
-        {/* Tasks List */}
+        {/* Dropdown Menu for Task Lists */}
+        {isListMenuOpen && (
+          <div className="lists-menu">
+            {lists.map((l) => (
+              <div
+                key={l.id}
+                className={`lists-menu-item ${
+                  l.id === activeListId ? "active" : ""
+                }`}
+                onClick={() => {
+                  setActiveListId(l.id);
+                  setIsListMenuOpen(false);
+                }}
+              >
+                <span>{l.title}</span>
+                {l.id === activeListId && <Check size={12} />}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Tasks List - Sleek Clean Lines */}
         <div className="tasks-container">
           {tasks.length === 0 ? (
             <div className="empty-state">
@@ -228,7 +300,7 @@ export function App() {
                     {task.due && !isDone && (
                       <div className="task-badges">
                         <span className="badge-due today">
-                          <Calendar size={10} />
+                          <Calendar size={9} />
                           {new Date(task.due).toLocaleDateString("uk-UA", {
                             day: "numeric",
                             month: "short",
@@ -241,9 +313,9 @@ export function App() {
                   <button
                     className="task-del-btn"
                     onClick={(e) => handleDeleteTask(task.id, e)}
-                    title="Видалити завдання"
+                    title="Видалити"
                   >
-                    <Trash2 size={13} />
+                    <Trash2 size={12} />
                   </button>
                 </div>
               );
@@ -251,13 +323,13 @@ export function App() {
           )}
         </div>
 
-        {/* Footer Quick Add */}
+        {/* Footer Quick Add with Round Button */}
         <div className="widget-footer">
           <form className="quick-add-form" onSubmit={handleCreateTask}>
             <input
               type="text"
               className="quick-add-input"
-              placeholder="+ Додати завдання у цей список..."
+              placeholder="+ Нове завдання..."
               value={newTaskTitle}
               onChange={(e) => setNewTaskTitle(e.target.value)}
             />
@@ -267,9 +339,19 @@ export function App() {
               disabled={!newTaskTitle.trim()}
               title="Додати"
             >
-              <Plus size={14} />
+              <Plus size={12} />
             </button>
           </form>
+
+          {/* Resize corner grip */}
+          <div
+            className="resize-grip"
+            title="Потягніть для зміни розміру або використовуйте кнопки S / M / L вгорі"
+          >
+            <svg viewBox="0 0 10 10">
+              <path d="M9 1L1 9M9 5L5 9M9 9L9 9" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
+          </div>
         </div>
 
         {/* Settings Modal */}
