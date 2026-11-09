@@ -87,23 +87,6 @@ export function App() {
     }
   };
 
-  // Close hides to system tray
-  const handleClose = async () => {
-    try {
-      await invoke("hide_window");
-    } catch (e) {
-      console.warn("hide_window error", e);
-    }
-  };
-
-  const handleMinimize = async () => {
-    try {
-      await invoke("minimize_window");
-    } catch (e) {
-      console.warn("minimize_window error", e);
-    }
-  };
-
   // Preset sizes
   const handleSetSize = async (size: "S" | "M" | "L") => {
     setActiveSize(size);
@@ -200,27 +183,14 @@ export function App() {
   return (
     <div className="widget-frame">
       <div className="glass-container">
-        {/* Header - draggable ONLY when not locked */}
+        {/* Clean Header - No traffic light buttons! */}
         <div
-          className={`widget-header ${isPositionLocked ? "locked" : ""}`}
+          className="widget-header"
           onMouseDown={handleStartDrag}
           style={{ cursor: isPositionLocked ? "default" : "grab" }}
         >
-          <div className="traffic-lights">
-            <button
-              className="traffic-btn close"
-              onClick={handleClose}
-              title="Сховати в трей"
-            />
-            <button
-              className="traffic-btn minimize"
-              onClick={handleMinimize}
-              title="Згорнути"
-            />
-          </div>
-
           <div
-            className="header-center"
+            className="header-left"
             onMouseDown={handleStartDrag}
             style={{ cursor: isPositionLocked ? "default" : "grab" }}
           >

@@ -49,7 +49,7 @@ html, body, #root {
 /* Top Header - ONLY this area is draggable */
 .widget-header {
   height: 40px;
-  padding: 0 12px;
+  padding: 0 14px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -61,48 +61,16 @@ html, body, #root {
   cursor: grabbing;
 }
 
-.traffic-lights {
+/* Header Left Title & Counter */
+.header-left {
   display: flex;
   align-items: center;
-  gap: 6px;
-  flex-shrink: 0;
-}
-
-.traffic-btn {
-  width: 11px;
-  height: 11px;
-  border-radius: 50%;
-  border: none;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  transition: transform 0.15s, opacity 0.15s;
-}
-.traffic-btn:hover {
-  transform: scale(1.15);
-}
-.traffic-btn.close {
-  background: #ff5f56;
-  border: 1px solid #e0443e;
-}
-.traffic-btn.minimize {
-  background: #ffbd2e;
-  border: 1px solid #dea123;
-}
-
-/* Header Center */
-.header-center {
-  display: flex;
-  align-items: center;
-  gap: 6px;
+  gap: 7px;
   cursor: grab;
-  flex: 1;
 }
 
 .header-title {
-  font-size: 12.5px;
+  font-size: 13px;
   font-weight: 600;
   letter-spacing: -0.2px;
   color: #ffffff;
