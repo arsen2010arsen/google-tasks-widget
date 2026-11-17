@@ -1,7 +1,7 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { Task, TaskList } from "./types";
+import { Task, TaskList, SyncStatus } from "./types";
 import { tasksService } from "./services/googleTasks";
 import { SettingsModal } from "./components/SettingsModal";
 import {
@@ -20,6 +20,7 @@ import {
   Star,
   ChevronDown,
   Clock,
+  AlertCircle,
 } from "lucide-react";
 import "./App.css";
 
@@ -124,6 +125,9 @@ export function App() {
     tasksService.getConfig().isPositionLocked || false
   );
   const [activeTab, setActiveTab] = useState<"all" | "starred">("all");
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>(() => tasksService.getSyncStatus());
+  const [isReauthing, setIsReauthing] = useState(false);
+  const lastSyncRef = useRef<number>(0);
 
   // Inline editing state
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
@@ -135,15 +139,40 @@ export function App() {
     try {
       const lists = await tasksService.getTaskLists();
       setTaskLists(lists);
-      const fetchedTasks = await tasksService.getAllTasks(selectedListId);
+      let targetListId = selectedListId;
+      if (targetListId !== "@default" && !lists.some((l) => l.id === targetListId)) {
+        targetListId = "@default";
+        setSelectedListId("@default");
+      }
+      const fetchedTasks = await tasksService.getAllTasks(targetListId);
       setTasks(fetchedTasks);
+      setSyncStatus(tasksService.getSyncStatus());
       setIsPositionLocked(tasksService.getConfig().isPositionLocked || false);
+      lastSyncRef.current = Date.now();
     } catch (err) {
       console.error("Failed loading tasks", err);
     } finally {
       setIsLoading(false);
     }
   }, [selectedListId]);
+
+  const handleQuickReauth = async () => {
+    const cfg = tasksService.getConfig();
+    if (!cfg.clientId?.trim() || !cfg.clientSecret?.trim()) {
+      setIsSettingsOpen(true);
+      return;
+    }
+    setIsReauthing(true);
+    try {
+      await tasksService.runOAuthLoopbackFlow();
+      await loadTasks();
+    } catch (err) {
+      console.error("Quick re-auth error:", err);
+      setIsSettingsOpen(true);
+    } finally {
+      setIsReauthing(false);
+    }
+  };
 
   // Restore saved window position and apply lock on startup
   useEffect(() => {
@@ -209,10 +238,23 @@ export function App() {
 
   useEffect(() => {
     loadTasks();
+
+    const minutes = Math.max(1, tasksService.getConfig().autoRefreshMinutes || 5);
     const interval = setInterval(() => {
       loadTasks();
-    }, 5 * 60 * 1000);
-    return () => clearInterval(interval);
+    }, minutes * 60 * 1000);
+
+    const handleFocusSync = () => {
+      if (Date.now() - lastSyncRef.current > 15000) {
+        loadTasks();
+      }
+    };
+    window.addEventListener("focus", handleFocusSync);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener("focus", handleFocusSync);
+    };
   }, [loadTasks]);
 
   // Window drag handler - only drags if NOT locked
@@ -271,6 +313,7 @@ export function App() {
 
     try {
       await tasksService.setTaskStatus(task.id, isNowCompleted, selectedListId);
+      setSyncStatus(tasksService.getSyncStatus());
     } catch (err) {
       console.error("Failed to update task status", err);
       loadTasks();
@@ -321,6 +364,7 @@ export function App() {
         selectedDueTime || undefined
       );
       setTasks((prev) => prev.map((t) => (t.id === optimisticId ? created : t)));
+      setSyncStatus(tasksService.getSyncStatus());
     } catch (err) {
       console.error("Failed creating task", err);
     }
@@ -340,6 +384,7 @@ export function App() {
         prev.map((t) => (t.id === taskId ? { ...t, title: trimmed } : t))
       );
       await tasksService.updateTask(taskId, trimmed, undefined, selectedListId);
+      setSyncStatus(tasksService.getSyncStatus());
     }
     setEditingTaskId(null);
   };
@@ -349,6 +394,7 @@ export function App() {
     e.stopPropagation();
     setTasks((prev) => prev.filter((t) => t.id !== taskId));
     await tasksService.deleteTask(taskId, selectedListId);
+    setSyncStatus(tasksService.getSyncStatus());
   };
 
   // Date & Time Helpers
@@ -622,6 +668,40 @@ export function App() {
             )}
           </button>
         </div>
+
+        {/* Sync Status Banner (when OAuth token expired or offline) */}
+        {syncStatus.state === "auth_expired" && (
+          <div className="sync-banner auth_expired">
+            <span className="sync-banner-text">
+              <AlertCircle size={13} style={{ flexShrink: 0 }} />
+              <span>Сесія Google закінчилась</span>
+            </span>
+            <button
+              type="button"
+              className="sync-banner-btn"
+              onClick={handleQuickReauth}
+              disabled={isReauthing}
+            >
+              {isReauthing ? "Очікування..." : "Увійти"}
+            </button>
+          </div>
+        )}
+        {syncStatus.state === "offline" && (
+          <div className="sync-banner offline">
+            <span className="sync-banner-text">
+              <AlertCircle size={13} style={{ flexShrink: 0 }} />
+              <span>Офлайн-кеш · немає зв'язку з Google</span>
+            </span>
+            <button
+              type="button"
+              className="sync-banner-btn"
+              onClick={loadTasks}
+              disabled={isLoading}
+            >
+              Повторити
+            </button>
+          </div>
+        )}
 
         {/* Task List (Active + Collapsible Completed) */}
         <div className="task-list">

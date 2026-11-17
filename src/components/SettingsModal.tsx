@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import { AppConfig } from "../types";
 import { tasksService } from "../services/googleTasks";
 import {
@@ -118,34 +117,8 @@ export const SettingsModal: React.FC<Props> = ({
     setConfig(updatedConfig);
     tasksService.saveConfig(updatedConfig);
 
-    const redirectUri = "http://127.0.0.1:8085";
-    const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${encodeURIComponent(
-      cleanClientId
-    )}&redirect_uri=${encodeURIComponent(
-      redirectUri
-    )}&response_type=code&scope=${encodeURIComponent(
-      "https://www.googleapis.com/auth/tasks"
-    )}&access_type=offline&prompt=consent`;
-
-    setCurrentAuthUrl(authUrl);
-
     try {
-      // 1. Start loopback listener in Rust first
-      const codePromise = invoke<string>("wait_for_oauth_code");
-
-      // 2. Open default browser via Tauri plugin opener, with cmd fallback
-      try {
-        await openUrl(authUrl);
-      } catch (openerErr) {
-        console.warn("openUrl failed, attempting fallback command", openerErr);
-        await invoke("open_browser_url", { url: authUrl });
-      }
-
-      // 3. Await authorization code
-      const code = await codePromise;
-
-      // 4. Exchange code for access & refresh tokens
-      await tasksService.exchangeCodeForTokens(code);
+      await tasksService.runOAuthLoopbackFlow((url) => setCurrentAuthUrl(url));
 
       setConfig(tasksService.getConfig());
       onConfigUpdated();
@@ -191,11 +164,7 @@ export const SettingsModal: React.FC<Props> = ({
   };
 
   const handleOpenExternal = async (url: string) => {
-    try {
-      await openUrl(url);
-    } catch {
-      await invoke("open_browser_url", { url });
-    }
+    await tasksService.openExternalUrl(url);
   };
 
   const handleToggleLockPosition = async (checked: boolean) => {
@@ -250,7 +219,9 @@ export const SettingsModal: React.FC<Props> = ({
     }
   };
 
-  const isConnected = !!config.accessToken && !config.useMockData;
+  const syncState = tasksService.getSyncStatus().state;
+  const isExpired = syncState === "auth_expired";
+  const isConnected = !!config.accessToken && !config.useMockData && !isExpired;
 
   return (
     <div className="modal-overlay">
@@ -267,10 +238,14 @@ export const SettingsModal: React.FC<Props> = ({
           style={{
             background: isConnected
               ? "rgba(52, 168, 83, 0.12)"
+              : isExpired
+              ? "rgba(255, 159, 10, 0.12)"
               : "rgba(66, 133, 244, 0.12)",
             border: `1px solid ${
               isConnected
                 ? "rgba(52, 168, 83, 0.35)"
+                : isExpired
+                ? "rgba(255, 159, 10, 0.4)"
                 : "rgba(66, 133, 244, 0.35)"
             }`,
             padding: "10px",
@@ -290,7 +265,7 @@ export const SettingsModal: React.FC<Props> = ({
             <span
               style={{
                 fontWeight: 600,
-                color: isConnected ? "#4ade80" : "#8ab4f8",
+                color: isConnected ? "#4ade80" : isExpired ? "#ffd080" : "#8ab4f8",
                 fontSize: "12px",
               }}
             >
@@ -308,6 +283,19 @@ export const SettingsModal: React.FC<Props> = ({
                 }}
               >
                 ● Підключено
+              </span>
+            ) : isExpired ? (
+              <span
+                style={{
+                  color: "#ffd080",
+                  fontSize: "10.5px",
+                  fontWeight: 600,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 3,
+                }}
+              >
+                ● Сесія минула
               </span>
             ) : (
               <span
@@ -354,6 +342,17 @@ export const SettingsModal: React.FC<Props> = ({
             </div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+              {isExpired && (
+                <p
+                  style={{
+                    fontSize: "10.5px",
+                    color: "#ffd080",
+                    lineHeight: "1.35",
+                  }}
+                >
+                  Термін дії сесії Google минув (у режимі Testing токен діє 7 днів). Увійдіть ще раз або переведіть додаток у «In production» в Google Cloud Console → Audience.
+                </p>
+              )}
               <p
                 style={{
                   fontSize: "10.5px",

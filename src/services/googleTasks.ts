@@ -1,4 +1,6 @@
-import { Task, TaskList, AppConfig } from "../types";
+import { invoke } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { Task, TaskList, AppConfig, SyncStatus } from "../types";
 
 const CONFIG_KEY = "g_tasks_widget_config";
 const TASKS_STORAGE_KEY = "g_tasks_mock_tasks";
@@ -12,6 +14,13 @@ interface PendingMutation {
   type: "create" | "complete" | "delete" | "update";
   payload: any;
   timestamp: number;
+}
+
+class AuthExpiredError extends Error {
+  constructor(message = "Термін дії сесії Google минув. Увійдіть повторно.") {
+    super(message);
+    this.name = "AuthExpiredError";
+  }
 }
 
 const DEFAULT_CONFIG: AppConfig = {
@@ -66,23 +75,38 @@ const DEFAULT_MOCK_TASKS: Task[] = [
 ];
 
 const INITIAL_STARRED_TASK_IDS: string[] = ["task-1", "task-2"];
-const INITIAL_STARRED_TITLE_SUBSTRINGS: string[] = [];
 
 export class GoogleTasksService {
   private config: AppConfig;
+  private syncStatus: SyncStatus = { state: "ok", error: null };
+  private refreshPromise: Promise<boolean> | null = null;
 
   constructor() {
     this.config = this.loadConfig();
     this.initMockStorage();
+    if (this.config.useMockData || !this.config.accessToken) {
+      this.syncStatus = { state: "mock", error: null };
+    }
   }
 
   public getConfig(): AppConfig {
     return { ...this.config };
   }
 
+  public getSyncStatus(): SyncStatus {
+    return { ...this.syncStatus };
+  }
+
+  public getPendingCount(): number {
+    return this.getPendingQueue().length;
+  }
+
   public saveConfig(newConfig: Partial<AppConfig>) {
     this.config = { ...this.config, ...newConfig };
     localStorage.setItem(CONFIG_KEY, JSON.stringify(this.config));
+    if (this.config.useMockData || !this.config.accessToken) {
+      this.syncStatus = { state: "mock", error: null };
+    }
   }
 
   private loadConfig(): AppConfig {
@@ -101,10 +125,107 @@ export class GoogleTasksService {
     }
   }
 
+  private getTasksCacheKey(listId: string): string {
+    return !listId || listId === "@default"
+      ? TASKS_STORAGE_KEY
+      : `${TASKS_STORAGE_KEY}_${listId}`;
+  }
+
+  private readCachedTasks(listId: string, fallbackToDefaultMock: boolean): Task[] {
+    const key = this.getTasksCacheKey(listId);
+    const raw = localStorage.getItem(key);
+    if (raw) {
+      try {
+        return JSON.parse(raw);
+      } catch {}
+    }
+    return fallbackToDefaultMock && listId === "@default" ? DEFAULT_MOCK_TASKS : [];
+  }
+
+  private writeCachedTasks(listId: string, tasks: Task[]) {
+    localStorage.setItem(this.getTasksCacheKey(listId), JSON.stringify(tasks));
+  }
+
+  // --- Shared Auth & Fetch Wrapper ---
+  private async fetchWithAuth(url: string, options: RequestInit = {}): Promise<Response> {
+    const execute = (token: string) => {
+      const headers = new Headers(options.headers);
+      headers.set("Authorization", `Bearer ${token}`);
+      return fetch(url, { ...options, headers });
+    };
+
+    let res = await execute(this.config.accessToken);
+
+    if (res.status === 401) {
+      if (this.config.refreshToken) {
+        const refreshed = await this.refreshAccessToken();
+        if (refreshed) {
+          res = await execute(this.config.accessToken);
+        }
+      }
+      if (res.status === 401) {
+        const msg = "Сесія Google закінчилась (термін дії токена минув). Увійдіть повторно.";
+        this.syncStatus = { state: "auth_expired", error: msg };
+        throw new AuthExpiredError(msg);
+      }
+    }
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => res.statusText);
+      throw new Error(`Google API помилка (${res.status}): ${text || res.statusText}`);
+    }
+
+    return res;
+  }
+
+  // --- OAuth Flow Helpers ---
+  public buildOAuthUrl(clientId: string): string {
+    const redirectUri = "http://127.0.0.1:8085";
+    return `https://accounts.google.com/o/oauth2/v2/auth?client_id=${encodeURIComponent(
+      clientId.trim()
+    )}&redirect_uri=${encodeURIComponent(
+      redirectUri
+    )}&response_type=code&scope=${encodeURIComponent(
+      "https://www.googleapis.com/auth/tasks"
+    )}&access_type=offline&prompt=consent`;
+  }
+
+  public async openExternalUrl(url: string): Promise<void> {
+    try {
+      await openUrl(url);
+    } catch {
+      await invoke("open_browser_url", { url });
+    }
+  }
+
+  public async runOAuthLoopbackFlow(
+    onUrlReady?: (url: string) => void
+  ): Promise<boolean> {
+    const cleanClientId = (this.config.clientId || "").trim();
+    const cleanClientSecret = (this.config.clientSecret || "").trim();
+
+    if (!cleanClientId || !cleanClientSecret) {
+      throw new Error("Вкажіть Client ID та Client Secret у налаштуваннях");
+    }
+
+    const authUrl = this.buildOAuthUrl(cleanClientId);
+    onUrlReady?.(authUrl);
+
+    const codePromise = invoke<string>("wait_for_oauth_code");
+    await this.openExternalUrl(authUrl);
+
+    const code = await codePromise;
+    return this.exchangeCodeForTokens(code);
+  }
+
   // --- Offline Queue Handling ---
   private getPendingQueue(): PendingMutation[] {
-    const raw = localStorage.getItem(PENDING_QUEUE_KEY);
-    return raw ? JSON.parse(raw) : [];
+    try {
+      const raw = localStorage.getItem(PENDING_QUEUE_KEY);
+      return raw ? JSON.parse(raw) : [];
+    } catch {
+      return [];
+    }
   }
 
   private savePendingQueue(queue: PendingMutation[]) {
@@ -117,6 +238,47 @@ export class GoogleTasksService {
     this.savePendingQueue(q);
   }
 
+  private migrateTempTaskId(tempId: string, serverId: string, listId: string) {
+    if (!tempId || !serverId || tempId === serverId) return;
+
+    // Migrate starred status
+    const starred = this.getStarredIds();
+    if (starred.has(tempId)) {
+      starred.delete(tempId);
+      starred.add(serverId);
+      localStorage.setItem(STARRED_TASKS_KEY, JSON.stringify(Array.from(starred)));
+    }
+
+    // Migrate due time
+    const dueTimes = this.getDueTimes();
+    if (dueTimes[tempId]) {
+      dueTimes[serverId] = dueTimes[tempId];
+      delete dueTimes[tempId];
+      localStorage.setItem(DUE_TIMES_KEY, JSON.stringify(dueTimes));
+    }
+
+    // Migrate task in local cache
+    const cached = this.readCachedTasks(listId, false);
+    const idx = cached.findIndex((t) => t.id === tempId);
+    if (idx !== -1) {
+      cached[idx].id = serverId;
+      this.writeCachedTasks(listId, cached);
+    }
+
+    // Migrate any queued mutations referencing tempId
+    const queue = this.getPendingQueue();
+    let queueChanged = false;
+    for (const item of queue) {
+      if (item.payload?.taskId === tempId) {
+        item.payload.taskId = serverId;
+        queueChanged = true;
+      }
+    }
+    if (queueChanged) {
+      this.savePendingQueue(queue);
+    }
+  }
+
   public async flushPendingQueue(): Promise<void> {
     if (this.config.useMockData || !this.config.accessToken) return;
 
@@ -125,15 +287,20 @@ export class GoogleTasksService {
 
     const remaining: PendingMutation[] = [];
 
-    for (const item of queue) {
+    for (let i = 0; i < queue.length; i++) {
+      const item = queue[i];
       try {
         if (item.type === "create") {
-          await this.createTaskDirect(
+          const listId = item.payload.listId || "@default";
+          const serverId = await this.createTaskDirect(
             item.payload.title,
             item.payload.due,
-            item.payload.listId || "@default",
+            listId,
             item.payload.notes
           );
+          if (serverId && item.payload.tempId) {
+            this.migrateTempTaskId(item.payload.tempId, serverId, listId);
+          }
         } else if (item.type === "complete") {
           await this.setTaskStatusDirect(
             item.payload.taskId,
@@ -156,6 +323,11 @@ export class GoogleTasksService {
         }
       } catch (err) {
         console.warn("Failed to flush pending mutation, keeping in queue", err);
+        if (err instanceof AuthExpiredError) {
+          // Preserve this and all subsequent mutations until user re-authenticates
+          remaining.push(...queue.slice(i));
+          break;
+        }
         remaining.push(item);
       }
     }
@@ -192,6 +364,7 @@ export class GoogleTasksService {
     }
 
     const data = await res.json();
+    this.syncStatus = { state: "ok", error: null };
     this.saveConfig({
       clientId: cleanClientId,
       clientSecret: cleanClientSecret,
@@ -203,74 +376,68 @@ export class GoogleTasksService {
     return true;
   }
 
-  // --- Task Lists ---
+  // --- Task Lists (Paginated) ---
   public async getTaskLists(): Promise<TaskList[]> {
     if (this.config.useMockData || !this.config.accessToken) {
+      this.syncStatus = { state: "mock", error: null };
       return [{ id: "@default", title: "Мої завдання" }];
     }
 
     try {
-      const res = await fetch("https://tasks.googleapis.com/tasks/v1/users/@me/lists", {
-        headers: {
-          Authorization: `Bearer ${this.config.accessToken}`,
-        },
-      });
+      const rawLists: any[] = [];
+      let pageToken: string | undefined = undefined;
 
-      if (!res.ok) {
-        if (res.status === 401 && this.config.refreshToken) {
-          const refreshed = await this.refreshAccessToken();
-          if (refreshed) return this.getTaskLists();
+      do {
+        const params = new URLSearchParams({ maxResults: "100" });
+        if (pageToken) params.set("pageToken", pageToken);
+
+        const res = await this.fetchWithAuth(
+          `https://tasks.googleapis.com/tasks/v1/users/@me/lists?${params.toString()}`
+        );
+        const data = await res.json();
+        if (Array.isArray(data.items)) {
+          rawLists.push(...data.items);
         }
-        return [{ id: "@default", title: "Мої завдання" }];
-      }
+        pageToken = data.nextPageToken;
+      } while (pageToken);
 
-      const data = await res.json();
-      const lists: TaskList[] = (data.items || []).map((l: any) => ({
+      const lists: TaskList[] = rawLists.map((l: any) => ({
         id: l.id,
         title: l.title || "Мої завдання",
         updated: l.updated,
       }));
 
-      localStorage.setItem(TASK_LISTS_STORAGE_KEY, JSON.stringify(lists));
-      return lists.length > 0 ? lists : [{ id: "@default", title: "Мої завдання" }];
-    } catch {
+      if (lists.length > 0) {
+        localStorage.setItem(TASK_LISTS_STORAGE_KEY, JSON.stringify(lists));
+        return lists;
+      }
+      return [{ id: "@default", title: "Мої завдання" }];
+    } catch (err) {
+      if (!(err instanceof AuthExpiredError)) {
+        this.syncStatus = {
+          state: "offline",
+          error: "Немає зв'язку з Google Tasks (показано кеш).",
+        };
+      }
       const cached = localStorage.getItem(TASK_LISTS_STORAGE_KEY);
-      return cached ? JSON.parse(cached) : [{ id: "@default", title: "Мої завдання" }];
+      if (cached) {
+        try {
+          const parsed = JSON.parse(cached);
+          if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        } catch {}
+      }
+      return [{ id: "@default", title: "Мої завдання" }];
     }
   }
 
   public getStarredIds(): Set<string> {
     try {
-      let set: Set<string>;
       const raw = localStorage.getItem(STARRED_TASKS_KEY);
       if (!raw) {
-        set = new Set(INITIAL_STARRED_TASK_IDS);
-      } else {
-        set = new Set(JSON.parse(raw));
+        localStorage.setItem(STARRED_TASKS_KEY, JSON.stringify(INITIAL_STARRED_TASK_IDS));
+        return new Set(INITIAL_STARRED_TASK_IDS);
       }
-
-      // One-time seed for user's existing tasks from Google Tasks
-      if (!localStorage.getItem("g_tasks_starred_seeded_v3")) {
-        for (const id of INITIAL_STARRED_TASK_IDS) {
-          set.add(id);
-        }
-        try {
-          const cached = localStorage.getItem(TASKS_STORAGE_KEY);
-          if (cached) {
-            const tasks: Task[] = JSON.parse(cached);
-            for (const t of tasks) {
-              const lower = (t.title || "").toLowerCase();
-              if (INITIAL_STARRED_TITLE_SUBSTRINGS.some((s) => lower.includes(s))) {
-                set.add(t.id);
-              }
-            }
-          }
-        } catch {}
-        localStorage.setItem(STARRED_TASKS_KEY, JSON.stringify(Array.from(set)));
-        localStorage.setItem("g_tasks_starred_seeded_v3", "true");
-      }
-
-      return set;
+      return new Set(JSON.parse(raw));
     } catch {
       return new Set(INITIAL_STARRED_TASK_IDS);
     }
@@ -289,20 +456,6 @@ export class GoogleTasksService {
       starred.delete(taskId);
     }
     localStorage.setItem(STARRED_TASKS_KEY, JSON.stringify(Array.from(starred)));
-
-    // Also update local cache
-    const raw = localStorage.getItem(TASKS_STORAGE_KEY);
-    if (raw) {
-      try {
-        const tasks: Task[] = JSON.parse(raw);
-        const idx = tasks.findIndex((t) => t.id === taskId);
-        if (idx !== -1) {
-          tasks[idx].starred = isStarred;
-          localStorage.setItem(TASKS_STORAGE_KEY, JSON.stringify(tasks));
-        }
-      } catch {}
-    }
-
     return isStarred;
   }
 
@@ -314,18 +467,6 @@ export class GoogleTasksService {
       starred.delete(taskId);
     }
     localStorage.setItem(STARRED_TASKS_KEY, JSON.stringify(Array.from(starred)));
-
-    const raw = localStorage.getItem(TASKS_STORAGE_KEY);
-    if (raw) {
-      try {
-        const tasks: Task[] = JSON.parse(raw);
-        const idx = tasks.findIndex((t) => t.id === taskId);
-        if (idx !== -1) {
-          tasks[idx].starred = isStarred;
-          localStorage.setItem(TASKS_STORAGE_KEY, JSON.stringify(tasks));
-        }
-      } catch {}
-    }
   }
 
   public getDueTimes(): Record<string, string> {
@@ -345,89 +486,89 @@ export class GoogleTasksService {
       delete times[taskId];
     }
     localStorage.setItem(DUE_TIMES_KEY, JSON.stringify(times));
-
-    const raw = localStorage.getItem(TASKS_STORAGE_KEY);
-    if (raw) {
-      try {
-        const tasks: Task[] = JSON.parse(raw);
-        const idx = tasks.findIndex((t) => t.id === taskId);
-        if (idx !== -1) {
-          tasks[idx].dueTime = dueTime;
-          localStorage.setItem(TASKS_STORAGE_KEY, JSON.stringify(tasks));
-        }
-      } catch {}
-    }
   }
 
-  // Unified tasks fetcher (returns ALL tasks including completed)
+  // Unified tasks fetcher (fetches ALL pages with maxResults=100)
   public async getAllTasks(listId: string = "@default"): Promise<Task[]> {
-    await this.flushPendingQueue();
     const starredIds = this.getStarredIds();
     const dueTimes = this.getDueTimes();
 
     if (this.config.useMockData || !this.config.accessToken) {
-      const raw = localStorage.getItem(TASKS_STORAGE_KEY);
-      const all: Task[] = (raw ? JSON.parse(raw) : DEFAULT_MOCK_TASKS).map((t: Task) => ({
+      this.syncStatus = { state: "mock", error: null };
+      return this.readCachedTasks(listId, true).map((t: Task) => ({
         ...t,
         starred: starredIds.has(t.id),
         dueTime: dueTimes[t.id] || t.dueTime,
       }));
-      return all;
     }
 
+    await this.flushPendingQueue();
+
     try {
-      const url = `https://tasks.googleapis.com/tasks/v1/lists/${encodeURIComponent(
-        listId
-      )}/tasks?showCompleted=true&showHidden=true`;
-      const res = await fetch(url, {
-        headers: {
-          Authorization: `Bearer ${this.config.accessToken}`,
-        },
-      });
+      const rawItems: any[] = [];
+      let pageToken: string | undefined = undefined;
 
-      if (!res.ok) {
-        if (res.status === 401 && this.config.refreshToken) {
-          const refreshed = await this.refreshAccessToken();
-          if (refreshed) {
-            return this.getAllTasks(listId);
-          }
+      do {
+        const params = new URLSearchParams({
+          showCompleted: "true",
+          showHidden: "true",
+          maxResults: "100",
+        });
+        if (pageToken) params.set("pageToken", pageToken);
+
+        const url = `https://tasks.googleapis.com/tasks/v1/lists/${encodeURIComponent(
+          listId
+        )}/tasks?${params.toString()}`;
+        const res = await this.fetchWithAuth(url);
+        const data = await res.json();
+
+        if (Array.isArray(data.items)) {
+          rawItems.push(...data.items);
         }
-        throw new Error(`Google API error: ${res.statusText}`);
-      }
+        pageToken = data.nextPageToken;
+      } while (pageToken);
 
-      const data = await res.json();
-      const items: Task[] = (data.items || []).map((item: any) => {
-        let isStarred = starredIds.has(item.id);
-        const lower = (item.title || "").toLowerCase();
-        if (!isStarred && INITIAL_STARRED_TITLE_SUBSTRINGS.some((s) => lower.includes(s))) {
-          isStarred = true;
-          starredIds.add(item.id);
-        }
-        return {
-          id: item.id,
-          title: item.title || "(Без назви)",
-          notes: item.notes,
-          status: item.status === "completed" ? "completed" : "needsAction",
-          due: item.due,
-          dueTime: dueTimes[item.id] || undefined,
-          updated: item.updated,
-          listId,
-          starred: isStarred,
-        };
-      });
+      // Sort active tasks by position ascending, completed tasks by completed/updated descending
+      const activeRaw = rawItems
+        .filter((i) => i.status !== "completed" && !i.deleted)
+        .sort((a, b) => String(a.position || "").localeCompare(String(b.position || "")));
 
-      localStorage.setItem(STARRED_TASKS_KEY, JSON.stringify(Array.from(starredIds)));
-      localStorage.setItem(TASKS_STORAGE_KEY, JSON.stringify(items));
+      const completedRaw = rawItems
+        .filter((i) => i.status === "completed" && !i.deleted)
+        .sort((a, b) => {
+          const tA = new Date(a.completed || a.updated || 0).getTime();
+          const tB = new Date(b.completed || b.updated || 0).getTime();
+          return tB - tA;
+        });
+
+      const items: Task[] = [...activeRaw, ...completedRaw].map((item: any) => ({
+        id: item.id,
+        title: item.title || "(Без назви)",
+        notes: item.notes,
+        status: item.status === "completed" ? "completed" : "needsAction",
+        due: item.due,
+        dueTime: dueTimes[item.id] || undefined,
+        updated: item.updated,
+        listId,
+        starred: starredIds.has(item.id),
+      }));
+
+      this.syncStatus = { state: "ok", error: null };
+      this.writeCachedTasks(listId, items);
       return items;
     } catch (err) {
       console.warn("Failed fetching tasks from Google, using cached tasks", err);
-      const raw = localStorage.getItem(TASKS_STORAGE_KEY);
-      const all: Task[] = (raw ? JSON.parse(raw) : DEFAULT_MOCK_TASKS).map((t: Task) => ({
+      if (!(err instanceof AuthExpiredError)) {
+        this.syncStatus = {
+          state: "offline",
+          error: "Немає зв'язку з Google Tasks (показано локальний кеш).",
+        };
+      }
+      return this.readCachedTasks(listId, true).map((t: Task) => ({
         ...t,
         starred: starredIds.has(t.id),
         dueTime: dueTimes[t.id] || t.dueTime,
       }));
-      return all;
     }
   }
 
@@ -438,23 +579,22 @@ export class GoogleTasksService {
   ): Promise<void> {
     const status = completed ? "completed" : "needsAction";
 
-    // Update local cache
-    const raw = localStorage.getItem(TASKS_STORAGE_KEY);
-    if (raw) {
-      const tasks: Task[] = JSON.parse(raw);
-      const idx = tasks.findIndex((t) => t.id === taskId);
-      if (idx !== -1) {
-        tasks[idx].status = status;
-        tasks[idx].updated = new Date().toISOString();
-        localStorage.setItem(TASKS_STORAGE_KEY, JSON.stringify(tasks));
-      }
+    const cached = this.readCachedTasks(listId, false);
+    const idx = cached.findIndex((t) => t.id === taskId);
+    if (idx !== -1) {
+      cached[idx].status = status;
+      cached[idx].updated = new Date().toISOString();
+      this.writeCachedTasks(listId, cached);
     }
 
     if (this.config.useMockData || !this.config.accessToken) return;
 
     try {
       await this.setTaskStatusDirect(taskId, completed, listId);
-    } catch {
+    } catch (err) {
+      if (!(err instanceof AuthExpiredError)) {
+        this.syncStatus = { state: "offline", error: "Зміни поставлено в чергу синхронізації." };
+      }
       this.enqueueMutation({
         id: `mut-${Date.now()}`,
         type: "complete",
@@ -476,19 +616,11 @@ export class GoogleTasksService {
       ? { status: "completed" }
       : { status: "needsAction", completed: null };
 
-    const res = await fetch(url, {
+    await this.fetchWithAuth(url, {
       method: "PATCH",
-      headers: {
-        Authorization: `Bearer ${this.config.accessToken}`,
-        "Content-Type": "application/json",
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(patchBody),
     });
-
-    if (!res.ok && res.status === 401 && this.config.refreshToken) {
-      await this.refreshAccessToken();
-      await this.setTaskStatusDirect(taskId, completed, listId);
-    }
   }
 
   public async createTask(
@@ -509,8 +641,9 @@ export class GoogleTasksService {
       }
     }
 
+    const tempId = `task-${Date.now()}`;
     const newTask: Task = {
-      id: `task-${Date.now()}`,
+      id: tempId,
       title,
       notes,
       status: "needsAction",
@@ -522,16 +655,15 @@ export class GoogleTasksService {
     };
 
     if (starred) {
-      this.setTaskStarred(newTask.id, true);
+      this.setTaskStarred(tempId, true);
     }
     if (dueTime) {
-      this.setTaskDueTime(newTask.id, dueTime);
+      this.setTaskDueTime(tempId, dueTime);
     }
 
-    const raw = localStorage.getItem(TASKS_STORAGE_KEY);
-    const tasks: Task[] = raw ? JSON.parse(raw) : [];
+    const tasks = this.readCachedTasks(listId, false);
     tasks.unshift(newTask);
-    localStorage.setItem(TASKS_STORAGE_KEY, JSON.stringify(tasks));
+    this.writeCachedTasks(listId, tasks);
 
     if (this.config.useMockData || !this.config.accessToken) {
       return newTask;
@@ -540,19 +672,17 @@ export class GoogleTasksService {
     try {
       const serverId = await this.createTaskDirect(title, formattedDue, listId, notes);
       if (serverId) {
-        if (starred) {
-          this.setTaskStarred(serverId, true);
-        }
-        if (dueTime) {
-          this.setTaskDueTime(serverId, dueTime);
-        }
+        this.migrateTempTaskId(tempId, serverId, listId);
         newTask.id = serverId;
       }
-    } catch {
+    } catch (err) {
+      if (!(err instanceof AuthExpiredError)) {
+        this.syncStatus = { state: "offline", error: "Зміни поставлено в чергу синхронізації." };
+      }
       this.enqueueMutation({
         id: `mut-${Date.now()}`,
         type: "create",
-        payload: { title, due: formattedDue, listId, notes, dueTime },
+        payload: { tempId, title, due: formattedDue, listId, notes, dueTime },
         timestamp: Date.now(),
       });
     }
@@ -569,23 +699,13 @@ export class GoogleTasksService {
     const url = `https://tasks.googleapis.com/tasks/v1/lists/${encodeURIComponent(
       listId
     )}/tasks`;
-    const res = await fetch(url, {
+    const res = await this.fetchWithAuth(url, {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${this.config.accessToken}`,
-        "Content-Type": "application/json",
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ title, due, notes }),
     });
-
-    if (res.ok) {
-      const data = await res.json();
-      return data.id;
-    } else if (res.status === 401 && this.config.refreshToken) {
-      await this.refreshAccessToken();
-      return this.createTaskDirect(title, due, listId, notes);
-    }
-    return null;
+    const data = await res.json();
+    return data.id || null;
   }
 
   public async updateTask(
@@ -599,25 +719,26 @@ export class GoogleTasksService {
     if (dueTime !== undefined) {
       this.setTaskDueTime(taskId, dueTime || undefined);
     }
-    const raw = localStorage.getItem(TASKS_STORAGE_KEY);
-    if (raw) {
-      const tasks: Task[] = JSON.parse(raw);
-      const idx = tasks.findIndex((t) => t.id === taskId);
-      if (idx !== -1) {
-        tasks[idx].title = title;
-        if (due !== undefined) tasks[idx].due = due;
-        if (dueTime !== undefined) tasks[idx].dueTime = dueTime || undefined;
-        if (notes !== undefined) tasks[idx].notes = notes;
-        tasks[idx].updated = new Date().toISOString();
-        localStorage.setItem(TASKS_STORAGE_KEY, JSON.stringify(tasks));
-      }
+
+    const tasks = this.readCachedTasks(listId, false);
+    const idx = tasks.findIndex((t) => t.id === taskId);
+    if (idx !== -1) {
+      tasks[idx].title = title;
+      if (due !== undefined) tasks[idx].due = due;
+      if (dueTime !== undefined) tasks[idx].dueTime = dueTime || undefined;
+      if (notes !== undefined) tasks[idx].notes = notes;
+      tasks[idx].updated = new Date().toISOString();
+      this.writeCachedTasks(listId, tasks);
     }
 
     if (this.config.useMockData || !this.config.accessToken) return;
 
     try {
       await this.updateTaskDirect(taskId, title, due, listId, notes);
-    } catch {
+    } catch (err) {
+      if (!(err instanceof AuthExpiredError)) {
+        this.syncStatus = { state: "offline", error: "Зміни поставлено в чергу синхронізації." };
+      }
       this.enqueueMutation({
         id: `mut-${Date.now()}`,
         type: "update",
@@ -641,35 +762,27 @@ export class GoogleTasksService {
     if (due !== undefined) bodyObj.due = due;
     if (notes !== undefined) bodyObj.notes = notes;
 
-    const res = await fetch(url, {
+    await this.fetchWithAuth(url, {
       method: "PATCH",
-      headers: {
-        Authorization: `Bearer ${this.config.accessToken}`,
-        "Content-Type": "application/json",
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(bodyObj),
     });
-
-    if (!res.ok && res.status === 401 && this.config.refreshToken) {
-      await this.refreshAccessToken();
-      await this.updateTaskDirect(taskId, title, due, listId, notes);
-    }
   }
 
   public async deleteTask(taskId: string, listId: string = "@default"): Promise<void> {
     this.setTaskDueTime(taskId, undefined);
-    const raw = localStorage.getItem(TASKS_STORAGE_KEY);
-    if (raw) {
-      const tasks: Task[] = JSON.parse(raw);
-      const filtered = tasks.filter((t) => t.id !== taskId);
-      localStorage.setItem(TASKS_STORAGE_KEY, JSON.stringify(filtered));
-    }
+    const tasks = this.readCachedTasks(listId, false);
+    const filtered = tasks.filter((t) => t.id !== taskId);
+    this.writeCachedTasks(listId, filtered);
 
     if (this.config.useMockData || !this.config.accessToken) return;
 
     try {
       await this.deleteTaskDirect(taskId, listId);
-    } catch {
+    } catch (err) {
+      if (!(err instanceof AuthExpiredError)) {
+        this.syncStatus = { state: "offline", error: "Зміни поставлено в чергу синхронізації." };
+      }
       this.enqueueMutation({
         id: `mut-${Date.now()}`,
         type: "delete",
@@ -686,48 +799,59 @@ export class GoogleTasksService {
     const url = `https://tasks.googleapis.com/tasks/v1/lists/${encodeURIComponent(
       listId
     )}/tasks/${encodeURIComponent(taskId)}`;
-    const res = await fetch(url, {
-      method: "DELETE",
-      headers: {
-        Authorization: `Bearer ${this.config.accessToken}`,
-      },
-    });
-
-    if (!res.ok && res.status === 401 && this.config.refreshToken) {
-      await this.refreshAccessToken();
-      await this.deleteTaskDirect(taskId, listId);
-    }
+    await this.fetchWithAuth(url, { method: "DELETE" });
   }
 
   public async refreshAccessToken(): Promise<boolean> {
-    const cleanClientId = (this.config.clientId || "").trim();
-    const cleanClientSecret = (this.config.clientSecret || "").trim();
-    if (!this.config.refreshToken || !cleanClientId) return false;
+    if (this.refreshPromise) {
+      return this.refreshPromise;
+    }
+
+    this.refreshPromise = (async () => {
+      const cleanClientId = (this.config.clientId || "").trim();
+      const cleanClientSecret = (this.config.clientSecret || "").trim();
+      if (!this.config.refreshToken || !cleanClientId) return false;
+
+      try {
+        const params = new URLSearchParams({
+          client_id: cleanClientId,
+          client_secret: cleanClientSecret,
+          refresh_token: this.config.refreshToken,
+          grant_type: "refresh_token",
+        });
+
+        const res = await fetch("https://oauth2.googleapis.com/token", {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: params.toString(),
+        });
+
+        if (!res.ok) {
+          const errBody = await res.text().catch(() => "");
+          console.warn("OAuth refresh failed:", res.status, errBody);
+          return false;
+        }
+
+        const data = await res.json();
+        if (data.access_token) {
+          this.saveConfig({
+            accessToken: data.access_token,
+            refreshToken: data.refresh_token || this.config.refreshToken,
+          });
+          this.syncStatus = { state: "ok", error: null };
+          return true;
+        }
+      } catch (err) {
+        console.error("Error refreshing Google access token", err);
+      }
+      return false;
+    })();
 
     try {
-      const params = new URLSearchParams({
-        client_id: cleanClientId,
-        client_secret: cleanClientSecret,
-        refresh_token: this.config.refreshToken,
-        grant_type: "refresh_token",
-      });
-
-      const res = await fetch("https://oauth2.googleapis.com/token", {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: params.toString(),
-      });
-
-      if (!res.ok) return false;
-      const data = await res.json();
-      if (data.access_token) {
-        this.saveConfig({ accessToken: data.access_token });
-        return true;
-      }
-    } catch (err) {
-      console.error("Error refreshing Google access token", err);
+      return await this.refreshPromise;
+    } finally {
+      this.refreshPromise = null;
     }
-    return false;
   }
 }
 

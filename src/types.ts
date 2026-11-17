@@ -16,6 +16,13 @@ export interface TaskList {
   updated?: string;
 }
 
+export type SyncState = 'ok' | 'offline' | 'auth_expired' | 'mock';
+
+export interface SyncStatus {
+  state: SyncState;
+  error: string | null;
+}
+
 export interface AppConfig {
   clientId: string;
   clientSecret: string;
